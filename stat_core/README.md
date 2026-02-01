@@ -9,7 +9,6 @@ use stat_core::{
     StatBlock, DamagePacketGenerator,
     damage::calculate_damage,
     combat::resolve_damage,
-    source::{BaseStatsSource, GearSource, StatSource},
     types::EquipmentSlot,
 };
 use loot_core::{Config, Generator};
@@ -20,20 +19,15 @@ fn main() {
     // Load loot generator and create a weapon
     let config = Config::load_from_dir(Path::new("config")).unwrap();
     let generator = Generator::new(config);
-    let weapon = generator.generate("iron_sword", 42).unwrap();
+    let sword = generator.generate("iron_sword", 42).unwrap();
 
-    // Build player stats from sources
-    let base_stats = BaseStatsSource::new(10);  // Level 10
-    let gear = GearSource::new(EquipmentSlot::MainHand, weapon);
-
-    let sources: Vec<Box<dyn StatSource>> = vec![
-        Box::new(base_stats),
-        Box::new(gear),
-    ];
-
+    // Create player and equip weapon
     let mut player = StatBlock::new();
-    player.rebuild_from_sources(&sources);
-    player.current_life = player.computed_max_life();
+    player.max_life.base = 100.0;
+    player.current_life = 100.0;
+    player.equip(EquipmentSlot::MainHand, sword);
+
+    println!("Equipped weapon: {:?}", player.equipped(EquipmentSlot::MainHand).map(|i| &i.name));
 
     // Create enemy
     let mut enemy = StatBlock::new();
@@ -49,6 +43,10 @@ fn main() {
 
     println!("Dealt {} damage, enemy has {} HP remaining",
         result.total_damage, enemy.current_life);
+
+    // Unequip weapon (stats automatically recalculated)
+    let removed = player.unequip(EquipmentSlot::MainHand);
+    println!("Unequipped: {:?}", removed.map(|i| i.name));
 }
 ```
 
@@ -206,44 +204,83 @@ Both functions use immutable APIs that return new state:
 
 ## Stat Sources
 
-The `StatSource` trait allows modular stat building. Sources are sorted by priority (lowest first) and applied in order to a `StatAccumulator`, which then finalizes into a `StatBlock`.
+There are two ways to manage equipment and stat sources:
 
-### How It Works
+### Simple: Built-in Equip/Unequip
+
+StatBlock has built-in equipment management that automatically rebuilds stats:
+
+```rust
+use stat_core::{StatBlock, types::EquipmentSlot};
+use loot_core::{Config, Generator};
+
+let config = Config::load_from_dir("config").unwrap();
+let generator = Generator::new(config);
+
+let mut player = StatBlock::new();
+player.max_life.base = 100.0;
+
+// Equip items - stats rebuild automatically
+let sword = generator.generate("iron_sword", 42).unwrap();
+let helmet = generator.generate("iron_helmet", 43).unwrap();
+
+player.equip(EquipmentSlot::MainHand, sword);
+player.equip(EquipmentSlot::Helmet, helmet);
+
+// Check what's equipped
+if let Some(weapon) = player.equipped(EquipmentSlot::MainHand) {
+    println!("Wielding: {}", weapon.name);
+}
+
+// Unequip - stats rebuild automatically, item returned
+let removed_helmet = player.unequip(EquipmentSlot::Helmet);
+println!("Removed: {:?}", removed_helmet.map(|i| i.name));
+
+// Iterate all equipped items
+for (slot, item) in player.all_equipped() {
+    println!("{:?}: {}", slot, item.name);
+}
+```
+
+### Advanced: External Source Management
+
+For complex scenarios (skill trees, auras, temporary buffs), manage sources externally:
 
 ```rust
 use stat_core::{
     StatBlock,
-    stat_block::StatAccumulator,
     source::{BaseStatsSource, GearSource, StatSource},
     types::EquipmentSlot,
 };
 use loot_core::{Config, Generator};
 
-// 1. Create sources
-let base_stats = BaseStatsSource::new(10);  // Level 10
-
 let config = Config::load_from_dir("config").unwrap();
 let generator = Generator::new(config);
+
+// Create sources
+let base_stats = BaseStatsSource::new(10);  // Level 10
 let sword = generator.generate("iron_sword", 42).unwrap();
 let helmet = generator.generate("iron_helmet", 43).unwrap();
 
-let main_hand = GearSource::new(EquipmentSlot::MainHand, sword);
-let head = GearSource::new(EquipmentSlot::Helmet, helmet);
-
-// 2. Collect into trait objects
-let sources: Vec<Box<dyn StatSource>> = vec![
+let mut sources: Vec<Box<dyn StatSource>> = vec![
     Box::new(base_stats),
-    Box::new(main_hand),
-    Box::new(head),
+    Box::new(GearSource::new(EquipmentSlot::MainHand, sword)),
+    Box::new(GearSource::new(EquipmentSlot::Helmet, helmet)),
 ];
 
-// 3. Rebuild stats (sorts by priority, applies in order)
+// Build stats from sources
 let mut player = StatBlock::new();
 player.rebuild_from_sources(&sources);
-
-// 4. Set current resources to max
 player.current_life = player.computed_max_life();
-player.current_mana = player.computed_max_mana();
+
+// To remove a source: filter it out and rebuild
+sources.retain(|s| s.id() != "gear_helmet");  // Remove helmet
+player.rebuild_from_sources(&sources);
+
+// To add a source: push and rebuild
+let shield = generator.generate("wooden_shield", 44).unwrap();
+sources.push(Box::new(GearSource::new(EquipmentSlot::OffHand, shield)));
+player.rebuild_from_sources(&sources);
 ```
 
 ### Priority Order
@@ -270,7 +307,7 @@ let base = BaseStatsSource::new(level);
 
 ### GearSource
 
-Converts `loot_core::Item` into stat modifiers:
+Converts `loot_core::Item` into stat modifiers. Each GearSource has an ID of `gear_{slot}`:
 
 ```rust
 use loot_core::currency::apply_currency;
@@ -280,7 +317,7 @@ let mut sword = generator.generate("iron_sword", 42).unwrap();
 let transmute = generator.config().currencies.get("transmute").unwrap();
 apply_currency(&generator, &mut sword, transmute, &mut rng).unwrap();
 
-// Equip it
+// Create gear source (ID will be "gear_main_hand")
 let gear = GearSource::new(EquipmentSlot::MainHand, sword);
 ```
 
@@ -309,6 +346,14 @@ impl StatSource for AuraSource {
         acc.global_physical_damage.add_increased(self.increased_damage);
     }
 }
+
+// Add aura
+sources.push(Box::new(AuraSource { increased_damage: 0.30 }));
+player.rebuild_from_sources(&sources);
+
+// Remove aura later
+sources.retain(|s| s.id() != "aura");
+player.rebuild_from_sources(&sources);
 ```
 
 ---
