@@ -1,5 +1,5 @@
 [workspace]
-members = ["stat_core", "stat_tui", "example_game"]
+members = ["stat_core"]
 resolver = "2"
 
 [workspace.package]
