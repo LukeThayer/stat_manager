@@ -5,12 +5,34 @@
 //! - DamagePacketGenerator: Skill/ability damage configuration
 //! - DamagePacket: Calculated damage output
 //! - Damage Resolution: Processing incoming damage against defenses
+//!
+//! # Quick Start
+//!
+//! ```rust,ignore
+//! use stat_core::prelude::*;
+//! use loot_core::{Config, Generator};
+//!
+//! // Create player and equip items
+//! let mut player = StatBlock::with_id("player");
+//! let generator = Generator::new(Config::load("config/").unwrap());
+//! player.equip(EquipmentSlot::MainHand, generator.generate("iron_sword", 12345).unwrap());
+//!
+//! // Combat
+//! let skills = default_skills();
+//! let dot_registry = DotRegistry::new();
+//! let packet = player.attack(&skills["heavy_strike"], &dot_registry);
+//!
+//! let mut enemy = StatBlock::with_id("goblin");
+//! let result = enemy.receive_damage(&packet, &dot_registry);
+//! println!("Dealt {} damage!", result.total_damage);
+//! ```
 
 pub mod combat;
 pub mod config;
 pub mod damage;
 pub mod defense;
 pub mod dot;
+pub mod prelude;
 pub mod source;
 pub mod stat_block;
 pub mod types;

@@ -7,15 +7,34 @@ mod stat_value;
 pub use aggregator::{StatAccumulator, StatusConversions, StatusEffectStats};
 pub use stat_value::StatValue;
 
-use crate::dot::ActiveDoT;
-use crate::source::StatSource;
-use crate::types::{ActiveBuff, ActiveStatusEffect};
+use crate::combat::CombatResult;
+use crate::damage::{calculate_damage, DamagePacket, DamagePacketGenerator};
+use crate::dot::{ActiveDoT, DotRegistry};
+use crate::combat::resolve_damage;
+use crate::source::{BuffSource, GearSource, StatSource};
+use crate::types::{ActiveBuff, ActiveStatusEffect, EquipmentSlot};
 use loot_core::types::{DamageType, StatusEffect};
+use loot_core::Item;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Complete stat state for an entity (player, monster, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatBlock {
+    // === Identity ===
+    /// Unique identifier for this entity
+    pub id: String,
+
+    // === Equipment ===
+    /// Equipped items by slot
+    #[serde(default)]
+    equipped_items: HashMap<EquipmentSlot, Item>,
+
+    // === Buff Sources ===
+    /// Active buff sources for stat calculation
+    #[serde(skip)]
+    buff_sources: Vec<BuffSource>,
+
     // === Resources ===
     pub max_life: StatValue,
     pub current_life: f64,
@@ -202,9 +221,23 @@ impl Default for StatBlock {
 }
 
 impl StatBlock {
-    /// Create a new empty StatBlock with base values
+    /// Create a new empty StatBlock with base values and default ID
     pub fn new() -> Self {
+        Self::with_id("entity")
+    }
+
+    /// Create a new StatBlock with a specific ID
+    pub fn with_id(id: impl Into<String>) -> Self {
         StatBlock {
+            // Identity
+            id: id.into(),
+
+            // Equipment
+            equipped_items: HashMap::new(),
+
+            // Buff sources
+            buff_sources: Vec::new(),
+
             // Resources
             max_life: StatValue::with_base(50.0),
             current_life: 50.0,
@@ -282,11 +315,17 @@ impl StatBlock {
         }
     }
 
-    /// Rebuild stats from all sources
+    /// Rebuild stats from all sources (external API for custom sources)
     pub fn rebuild_from_sources(&mut self, sources: &[Box<dyn StatSource>]) {
+        // Preserve identity and equipment
+        let id = std::mem::take(&mut self.id);
+        let equipped_items = std::mem::take(&mut self.equipped_items);
+        let buff_sources = std::mem::take(&mut self.buff_sources);
+
         // Reset to base values
-        let base = StatBlock::new();
-        *self = base;
+        *self = StatBlock::with_id(id);
+        self.equipped_items = equipped_items;
+        self.buff_sources = buff_sources;
 
         // Create accumulator and apply all sources
         let mut accumulator = StatAccumulator::new();
@@ -297,6 +336,41 @@ impl StatBlock {
 
         for source in sorted_sources {
             source.apply(&mut accumulator);
+        }
+
+        // Apply accumulated stats to self
+        accumulator.apply_to(self);
+
+        // Update current values to max if they exceed
+        self.current_life = self.current_life.min(self.max_life.compute());
+        self.current_mana = self.current_mana.min(self.max_mana.compute());
+        self.current_energy_shield = self.current_energy_shield.min(self.max_energy_shield);
+    }
+
+    /// Rebuild stats from internal equipment and buffs
+    fn rebuild(&mut self) {
+        // Preserve identity and internal state
+        let id = std::mem::take(&mut self.id);
+        let equipped_items = std::mem::take(&mut self.equipped_items);
+        let buff_sources = std::mem::take(&mut self.buff_sources);
+
+        // Reset to base values
+        *self = StatBlock::with_id(id);
+        self.equipped_items = equipped_items;
+        self.buff_sources = buff_sources;
+
+        // Create accumulator
+        let mut accumulator = StatAccumulator::new();
+
+        // Apply gear sources
+        for (slot, item) in &self.equipped_items {
+            let gear_source = GearSource::new(*slot, item.clone());
+            gear_source.apply(&mut accumulator);
+        }
+
+        // Apply buff sources
+        for buff in &self.buff_sources {
+            buff.apply(&mut accumulator);
         }
 
         // Apply accumulated stats to self
@@ -344,5 +418,82 @@ impl StatBlock {
     pub fn set_max_energy_shield(&mut self, amount: f64) {
         self.max_energy_shield = amount;
         self.current_energy_shield = self.current_energy_shield.min(amount);
+    }
+
+    // === Equipment Methods ===
+
+    /// Equip an item to a slot, automatically rebuilding stats
+    pub fn equip(&mut self, slot: EquipmentSlot, item: Item) {
+        self.equipped_items.insert(slot, item);
+        self.rebuild();
+    }
+
+    /// Unequip an item from a slot, returning it if present
+    pub fn unequip(&mut self, slot: EquipmentSlot) -> Option<Item> {
+        let item = self.equipped_items.remove(&slot);
+        if item.is_some() {
+            self.rebuild();
+        }
+        item
+    }
+
+    /// Get a reference to the item equipped in a slot
+    pub fn equipped(&self, slot: EquipmentSlot) -> Option<&Item> {
+        self.equipped_items.get(&slot)
+    }
+
+    /// Get all equipped items
+    pub fn all_equipped(&self) -> impl Iterator<Item = (&EquipmentSlot, &Item)> {
+        self.equipped_items.iter()
+    }
+
+    // === Buff Methods ===
+
+    /// Apply a buff, automatically rebuilding stats
+    pub fn apply_buff(&mut self, buff: BuffSource) {
+        // Check if buff already exists and refresh/stack instead
+        if let Some(existing) = self.buff_sources.iter_mut().find(|b| b.buff_id == buff.buff_id) {
+            existing.refresh(buff.duration_remaining);
+            existing.add_stack();
+        } else {
+            self.buff_sources.push(buff);
+        }
+        self.rebuild();
+    }
+
+    /// Remove a buff by ID
+    pub fn remove_buff(&mut self, buff_id: &str) {
+        let had_buff = self.buff_sources.iter().any(|b| b.buff_id == buff_id);
+        self.buff_sources.retain(|b| b.buff_id != buff_id);
+        if had_buff {
+            self.rebuild();
+        }
+    }
+
+    /// Tick all buffs by delta time, removing expired ones
+    pub fn tick_buffs(&mut self, delta: f64) {
+        let count_before = self.buff_sources.len();
+        self.buff_sources.retain_mut(|buff| buff.tick(delta));
+        if self.buff_sources.len() != count_before {
+            self.rebuild();
+        }
+    }
+
+    /// Get all active buffs
+    pub fn active_buff_sources(&self) -> &[BuffSource] {
+        &self.buff_sources
+    }
+
+    // === Combat Methods ===
+
+    /// Generate a damage packet for a skill attack (RNG handled internally)
+    pub fn attack(&self, skill: &DamagePacketGenerator, dot_registry: &DotRegistry) -> DamagePacket {
+        let mut rng = rand::thread_rng();
+        calculate_damage(self, skill, self.id.clone(), dot_registry, &mut rng)
+    }
+
+    /// Receive damage from a damage packet, returning combat result
+    pub fn receive_damage(&mut self, packet: &DamagePacket, dot_registry: &DotRegistry) -> CombatResult {
+        resolve_damage(self, packet, dot_registry)
     }
 }

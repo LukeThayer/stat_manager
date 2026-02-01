@@ -139,6 +139,8 @@ mod tests {
     fn test_gear_source_id() {
         // Create a minimal item for testing
         let item = Item {
+            seed: 12345,
+            operations: vec![],
             base_type_id: "test_sword".to_string(),
             name: "Test Sword".to_string(),
             base_name: "Sword".to_string(),

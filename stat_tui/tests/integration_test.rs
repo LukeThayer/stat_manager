@@ -110,7 +110,7 @@ fn test_full_item_to_combat_flow() {
     let mut rng = Generator::make_rng(seed);
 
     let mut item = generator
-        .generate_normal("iron_sword", &mut rng)
+        .generate("iron_sword", seed)
         .expect("Failed to generate iron_sword");
 
     println!("  Generated normal item (seed: {}):", seed);

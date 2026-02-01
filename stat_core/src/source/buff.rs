@@ -5,6 +5,7 @@ use crate::stat_block::StatAccumulator;
 use loot_core::types::StatType;
 
 /// Temporary buff/debuff source
+#[derive(Debug, Clone)]
 pub struct BuffSource {
     /// Buff identifier
     pub buff_id: String,

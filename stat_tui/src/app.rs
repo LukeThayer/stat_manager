@@ -139,6 +139,8 @@ impl App {
         // Weapon: Iron Sword
         // Local mods affect weapon base damage, global mods affect character stats
         let weapon = Item {
+            seed: 1,
+            operations: vec![],
             base_type_id: "iron_sword".to_string(),
             name: "Warrior's Iron Sword".to_string(),
             base_name: "Iron Sword".to_string(),
@@ -175,6 +177,8 @@ impl App {
 
         // Body Armour: Iron Plate
         let body = Item {
+            seed: 2,
+            operations: vec![],
             base_type_id: "iron_plate".to_string(),
             name: "Sturdy Iron Plate".to_string(),
             base_name: "Iron Plate".to_string(),
@@ -200,6 +204,8 @@ impl App {
 
         // Helmet: Iron Helm
         let helmet = Item {
+            seed: 3,
+            operations: vec![],
             base_type_id: "iron_helm".to_string(),
             name: "Reinforced Iron Helm".to_string(),
             base_name: "Iron Helm".to_string(),
@@ -225,6 +231,8 @@ impl App {
 
         // Ring: Gold Ring
         let ring = Item {
+            seed: 4,
+            operations: vec![],
             base_type_id: "gold_ring".to_string(),
             name: "Ruby Gold Ring".to_string(),
             base_name: "Gold Ring".to_string(),
@@ -259,6 +267,8 @@ impl App {
         let mut enemy_equipment = HashMap::new();
 
         let enemy_armor = Item {
+            seed: 5,
+            operations: vec![],
             base_type_id: "bone_armor".to_string(),
             name: "Bone Armor".to_string(),
             base_name: "Bone Armor".to_string(),

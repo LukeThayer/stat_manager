@@ -146,6 +146,8 @@ impl GameState {
     /// Create a fallback weapon when no config is available
     fn create_fallback_weapon() -> Item {
         Item {
+            seed: 0,
+            operations: vec![],
             base_type_id: "iron_sword".to_string(),
             name: "Iron Sword".to_string(),
             base_name: "Iron Sword".to_string(),
@@ -213,7 +215,7 @@ impl GameState {
 
         // Try to generate a starting weapon, use fallback if not available
         let weapon = generator
-            .generate_normal("iron_sword", &mut rng)
+            .generate("iron_sword", rng.gen())
             .map(|mut w| {
                 generator.make_magic(&mut w, &mut rng);
                 w
@@ -282,7 +284,7 @@ impl GameState {
 
         if !weapon_bases.is_empty() {
             let base_id = weapon_bases.choose(&mut self.rng).unwrap();
-            if let Some(mut weapon) = self.generator.generate_normal(base_id, &mut self.rng) {
+            if let Some(mut weapon) = self.generator.generate(base_id, self.rng.gen()) {
                 // 50% chance to make magic
                 if self.rng.gen_bool(0.5) {
                     self.generator.make_magic(&mut weapon, &mut self.rng);
@@ -369,7 +371,7 @@ impl GameState {
         if self.rng.gen_bool(0.3) {
             let base_ids: Vec<&String> = self.generator.base_type_ids();
             if let Some(base_id) = base_ids.choose(&mut self.rng) {
-                if let Some(item) = self.generator.generate_normal(base_id, &mut self.rng) {
+                if let Some(item) = self.generator.generate(base_id, self.rng.gen()) {
                     self.messages.push(format!("Dropped: {}", item.name));
                     self.inventory.push(item);
                 }
