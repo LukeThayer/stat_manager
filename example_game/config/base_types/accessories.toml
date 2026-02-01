@@ -18,7 +18,7 @@ level = 1
 id = "iron_ring"
 name = "Iron Ring"
 class = "ring"
-tags = ["accessory", "jewelry", "physical"]
+tags = ["accessory", "jewelry", "physical", "life", "resistance"]
 
 [base_types.implicit]
 stat = "added_physical_damage"
@@ -32,7 +32,7 @@ level = 1
 id = "gold_amulet"
 name = "Gold Amulet"
 class = "amulet"
-tags = ["accessory", "jewelry"]
+tags = ["accessory", "jewelry", "life"]
 
 [base_types.implicit]
 stat = "increased_item_rarity"
@@ -46,7 +46,7 @@ level = 1
 id = "leather_belt"
 name = "Leather Belt"
 class = "belt"
-tags = ["accessory"]
+tags = ["accessory", "defense", "life"]
 
 [base_types.implicit]
 stat = "added_life"

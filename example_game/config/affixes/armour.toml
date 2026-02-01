@@ -9,7 +9,7 @@ type = "prefix"
 stat = "added_life"
 scope = "global"
 tags = ["life", "defense"]
-allowed_classes = ["helmet", "body_armour", "gloves", "boots", "shield", "belt"]
+allowed_classes = ["helmet", "body_armour", "gloves", "boots", "shield", "belt", "ring"]
 
 [[affixes.tiers]]
 tier = 1
