@@ -268,7 +268,8 @@ fn test_full_item_to_combat_flow() {
         }
 
         // Resolve damage
-        let result = resolve_damage(&mut enemy, &packet);
+        let (new_enemy, result) = resolve_damage(&enemy, &packet);
+        enemy = new_enemy;
 
         println!("  Combat Result:");
         println!("    Damage Dealt: {:.0}", result.total_damage);

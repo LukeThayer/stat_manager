@@ -327,7 +327,8 @@ impl GameState {
             &mut self.rng,
         );
 
-        let result = resolve_damage(&mut self.enemy, &packet);
+        let (new_enemy, result) = resolve_damage(&self.enemy, &packet);
+        self.enemy = new_enemy;
 
         // Advance time by attack interval (modified by skill)
         let attack_speed = self.player.attack_speed.compute() * self.player.weapon_attack_speed;

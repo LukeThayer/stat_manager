@@ -58,7 +58,8 @@ impl DpsSimulation {
             }
 
             // Apply damage
-            let combat_result = resolve_damage(defender, &packet);
+            let (new_defender, combat_result) = resolve_damage(defender, &packet);
+            *defender = new_defender;
             result.total_damage += combat_result.total_damage;
 
             // Check for kill

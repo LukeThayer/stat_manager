@@ -577,7 +577,8 @@ impl App {
         ));
 
         // === DAMAGE RESOLUTION ===
-        let result = resolve_damage(&mut self.enemy, &packet);
+        let (new_enemy, result) = resolve_damage(&self.enemy, &packet);
+        self.enemy = new_enemy;
 
         self.combat_log.push("  ── Defense Calculation ──".to_string());
 

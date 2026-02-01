@@ -8,39 +8,41 @@ use crate::types::Effect;
 use loot_core::types::{DamageType, StatusEffect};
 use rand::Rng;
 
-/// Resolve a damage packet against a defending stat block
+/// Resolve a damage packet against a defending stat block (immutable API)
 ///
-/// This is the main combat resolution function that:
+/// Returns the new defender state and combat result. This is the main combat
+/// resolution function that:
 /// 1. Applies resistances to each damage type
 /// 2. Applies armour to physical damage
 /// 3. Applies evasion one-shot protection
 /// 4. Applies damage to ES then life
 /// 5. Processes status effect applications (chance = status_damage / max_health)
 pub fn resolve_damage(
-    defender: &mut StatBlock,
+    defender: &StatBlock,
     packet: &DamagePacket,
-) -> CombatResult {
+) -> (StatBlock, CombatResult) {
     let mut rng = rand::thread_rng();
     resolve_damage_with_rng(defender, packet, &mut rng)
 }
 
 /// Resolve damage with a provided RNG (for deterministic testing)
 pub fn resolve_damage_with_rng(
-    defender: &mut StatBlock,
+    defender: &StatBlock,
     packet: &DamagePacket,
     rng: &mut impl Rng,
-) -> CombatResult {
+) -> (StatBlock, CombatResult) {
+    let mut new_defender = defender.clone();
     let mut result = CombatResult::new();
 
     // Store initial state
-    result.es_before = defender.current_energy_shield;
-    result.life_before = defender.current_life;
+    result.es_before = new_defender.current_energy_shield;
+    result.life_before = new_defender.current_life;
 
     // Step 1: Calculate mitigated damage for each type
     for final_damage in &packet.damages {
         let raw = final_damage.amount;
         let pen = packet.penetration(final_damage.damage_type);
-        let resist = defender.resistance(final_damage.damage_type);
+        let resist = new_defender.resistance(final_damage.damage_type);
 
         let after_resist = if final_damage.damage_type == DamageType::Physical {
             // Physical uses armour instead of resistance
@@ -70,7 +72,7 @@ pub fn resolve_damage_with_rng(
 
     if let Some(phys) = physical_damage {
         if phys.final_amount > 0.0 {
-            let armour = defender.armour.compute();
+            let armour = new_defender.armour.compute();
             let after_armour = calculate_armour_reduction(armour, phys.final_amount);
             let armour_reduced = phys.final_amount - after_armour;
 
@@ -84,7 +86,7 @@ pub fn resolve_damage_with_rng(
     let total_before_evasion: f64 = result.damage_taken.iter().map(|d| d.final_amount).sum();
 
     // Step 3: Apply evasion one-shot protection (accuracy vs evasion)
-    let evasion = defender.evasion.compute();
+    let evasion = new_defender.evasion.compute();
     let accuracy = packet.accuracy;
     let (damage_after_evasion, evaded) = apply_evasion_cap(accuracy, evasion, total_before_evasion);
 
@@ -110,31 +112,31 @@ pub fn resolve_damage_with_rng(
     let mut remaining_damage = result.total_damage;
 
     // ES absorbs damage first
-    if defender.current_energy_shield > 0.0 && remaining_damage > 0.0 {
-        let es_absorbed = remaining_damage.min(defender.current_energy_shield);
-        defender.current_energy_shield -= es_absorbed;
+    if new_defender.current_energy_shield > 0.0 && remaining_damage > 0.0 {
+        let es_absorbed = remaining_damage.min(new_defender.current_energy_shield);
+        new_defender.current_energy_shield -= es_absorbed;
         remaining_damage -= es_absorbed;
         result.damage_blocked_by_es = es_absorbed;
     }
 
     // Remaining damage goes to life
     if remaining_damage > 0.0 {
-        defender.current_life -= remaining_damage;
+        new_defender.current_life -= remaining_damage;
     }
 
     // Check for death
-    if defender.current_life <= 0.0 {
+    if new_defender.current_life <= 0.0 {
         result.is_killing_blow = true;
-        defender.current_life = 0.0;
+        new_defender.current_life = 0.0;
     }
 
     // Store final state
-    result.es_after = defender.current_energy_shield;
-    result.life_after = defender.current_life;
+    result.es_after = new_defender.current_energy_shield;
+    result.life_after = new_defender.current_life;
 
     // Step 5: Process status effect applications using unified Effect system
     // Chance to apply = status_damage / target_max_health
-    let target_max_health = defender.computed_max_life();
+    let target_max_health = new_defender.computed_max_life();
     for pending_status in &packet.status_effects_to_apply {
         let apply_chance = pending_status.calculate_apply_chance(target_max_health);
 
@@ -149,12 +151,12 @@ pub fn resolve_damage_with_rng(
             );
 
             // Add to unified effects (handles stacking internally)
-            defender.add_effect(effect.clone());
+            new_defender.add_effect(effect.clone());
             result.effects_applied.push(effect);
         }
     }
 
-    result
+    (new_defender, result)
 }
 
 /// Create an Effect from a pending status effect
@@ -237,11 +239,11 @@ mod tests {
 
         let packet = make_test_packet(vec![(DamageType::Physical, 50.0)]);
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (new_defender, result) = resolve_damage(&defender, &packet);
 
         // Should take some damage (reduced by armour if any)
         assert!(result.total_damage > 0.0);
-        assert!(defender.current_life < 100.0);
+        assert!(new_defender.current_life < 100.0);
     }
 
     #[test]
@@ -252,7 +254,7 @@ mod tests {
 
         let packet = make_test_packet(vec![(DamageType::Fire, 100.0)]);
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (_, result) = resolve_damage(&defender, &packet);
 
         // Should take 50 damage after 50% resist
         assert!((result.total_damage - 50.0).abs() < 1.0);
@@ -267,7 +269,7 @@ mod tests {
 
         let packet = make_test_packet(vec![(DamageType::Physical, 100.0)]);
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (_, result) = resolve_damage(&defender, &packet);
 
         // Armour should reduce physical damage
         assert!(result.damage_reduced_by_armour > 0.0);
@@ -285,7 +287,7 @@ mod tests {
         let mut packet = make_test_packet(vec![(DamageType::Fire, 1500.0)]);
         packet.accuracy = 2000.0;
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (_, result) = resolve_damage(&defender, &packet);
 
         // Should cap at 1000 (1500 - 1000 = 500 evaded)
         assert!(result.triggered_evasion_cap);
@@ -302,12 +304,12 @@ mod tests {
 
         let packet = make_test_packet(vec![(DamageType::Fire, 75.0)]);
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (new_defender, result) = resolve_damage(&defender, &packet);
 
         // ES should absorb first 50, life takes remaining 25
         assert!((result.damage_blocked_by_es - 50.0).abs() < 1.0);
-        assert!((defender.current_energy_shield - 0.0).abs() < 0.1);
-        assert!((defender.current_life - 75.0).abs() < 1.0);
+        assert!((new_defender.current_energy_shield - 0.0).abs() < 0.1);
+        assert!((new_defender.current_life - 75.0).abs() < 1.0);
     }
 
     #[test]
@@ -317,11 +319,11 @@ mod tests {
 
         let packet = make_test_packet(vec![(DamageType::Fire, 1000.0)]);
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (new_defender, result) = resolve_damage(&defender, &packet);
 
         assert!(result.is_killing_blow);
-        assert!(!defender.is_alive());
-        assert!(defender.current_life <= 0.0);
+        assert!(!new_defender.is_alive());
+        assert!(new_defender.current_life <= 0.0);
     }
 
     #[test]
@@ -333,7 +335,7 @@ mod tests {
         let mut packet = make_test_packet(vec![(DamageType::Fire, 100.0)]);
         packet.fire_pen = 25.0; // 25% penetration
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (_, result) = resolve_damage(&defender, &packet);
 
         // 75% resist - 25% pen = 50% effective resist
         // 100 * (1 - 0.5) = 50 damage
@@ -352,7 +354,7 @@ mod tests {
             (DamageType::Cold, 100.0),   // 75 after resist
         ]);
 
-        let result = resolve_damage(&mut defender, &packet);
+        let (_, result) = resolve_damage(&defender, &packet);
 
         // Total: 50 + 75 = 125
         assert!((result.total_damage - 125.0).abs() < 1.0);

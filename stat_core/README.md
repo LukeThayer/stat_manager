@@ -5,30 +5,50 @@ A game mechanics library for stat management, damage calculation, and combat res
 ## Quick Start
 
 ```rust
-use stat_core::{StatBlock, DamagePacketGenerator, damage::calculate_damage, combat::resolve_damage};
+use stat_core::{
+    StatBlock, DamagePacketGenerator,
+    damage::calculate_damage,
+    combat::resolve_damage,
+    source::{BaseStatsSource, GearSource, StatSource},
+    types::EquipmentSlot,
+};
+use loot_core::{Config, Generator};
 use rand::thread_rng;
+use std::path::Path;
 
 fn main() {
-    // Create attacker with weapon stats
-    let mut attacker = StatBlock::new();
-    attacker.weapon_physical_min = 50.0;
-    attacker.weapon_physical_max = 100.0;
-    attacker.global_physical_damage.add_increased(0.50); // 50% increased damage
+    // Load loot generator and create a weapon
+    let config = Config::load_from_dir(Path::new("config")).unwrap();
+    let generator = Generator::new(config);
+    let weapon = generator.generate("iron_sword", 42).unwrap();
 
-    // Create defender
-    let mut defender = StatBlock::new();
-    defender.max_life.base = 500.0;
-    defender.current_life = 500.0;
-    defender.armour.base = 200.0;
+    // Build player stats from sources
+    let base_stats = BaseStatsSource::new(10);  // Level 10
+    let gear = GearSource::new(EquipmentSlot::MainHand, weapon);
 
-    // Attack with basic attack
+    let sources: Vec<Box<dyn StatSource>> = vec![
+        Box::new(base_stats),
+        Box::new(gear),
+    ];
+
+    let mut player = StatBlock::new();
+    player.rebuild_from_sources(&sources);
+    player.current_life = player.computed_max_life();
+
+    // Create enemy
+    let mut enemy = StatBlock::new();
+    enemy.max_life.base = 500.0;
+    enemy.current_life = 500.0;
+    enemy.armour.base = 200.0;
+
+    // Attack
     let skill = DamagePacketGenerator::basic_attack();
     let mut rng = thread_rng();
-    let packet = calculate_damage(&attacker, &skill, "attacker".into(), &mut rng);
-    let result = resolve_damage(&mut defender, &packet);
+    let packet = calculate_damage(&player, &skill, "player".into(), &mut rng);
+    let (enemy, result) = resolve_damage(&enemy, &packet);
 
-    println!("Dealt {} damage, defender has {} HP remaining",
-        result.total_damage, defender.current_life);
+    println!("Dealt {} damage, enemy has {} HP remaining",
+        result.total_damage, enemy.current_life);
 }
 ```
 
@@ -163,46 +183,133 @@ Final = Damage × (1 - (Resistance - Penetration))
 
 ## Combat Flow
 
+Both functions use immutable APIs that return new state:
+
 ```
-1. calculate_damage() → DamagePacket
+1. calculate_damage(&attacker, &skill, source_id, &mut rng) → DamagePacket
    - Roll weapon/skill damage
    - Apply damage conversions
    - Apply scaling (increased/more)
    - Calculate crit
    - Generate pending status effects
 
-2. resolve_damage() → CombatResult
+2. resolve_damage(&defender, &packet) → (StatBlock, CombatResult)
    - Apply resistances
    - Apply armour (physical only)
    - Apply evasion cap
    - Damage ES, then life
    - Roll status effect applications
-   - Return damage breakdown
+   - Return new defender state + damage breakdown
 ```
 
 ---
 
 ## Stat Sources
 
-Build stats from multiple sources:
+The `StatSource` trait allows modular stat building. Sources are sorted by priority (lowest first) and applied in order to a `StatAccumulator`, which then finalizes into a `StatBlock`.
+
+### How It Works
 
 ```rust
-use stat_core::{StatBlock, source::{BaseStatsSource, GearSource, StatSource}};
+use stat_core::{
+    StatBlock,
+    stat_block::StatAccumulator,
+    source::{BaseStatsSource, GearSource, StatSource},
+    types::EquipmentSlot,
+};
+use loot_core::{Config, Generator};
 
-let mut player = StatBlock::new();
+// 1. Create sources
+let base_stats = BaseStatsSource::new(10);  // Level 10
+
+let config = Config::load_from_dir("config").unwrap();
+let generator = Generator::new(config);
+let sword = generator.generate("iron_sword", 42).unwrap();
+let helmet = generator.generate("iron_helmet", 43).unwrap();
+
+let main_hand = GearSource::new(EquipmentSlot::MainHand, sword);
+let head = GearSource::new(EquipmentSlot::Helmet, helmet);
+
+// 2. Collect into trait objects
 let sources: Vec<Box<dyn StatSource>> = vec![
-    Box::new(BaseStatsSource::new(10)),  // Level 10 base stats
-    Box::new(GearSource::new(slot, item)),
+    Box::new(base_stats),
+    Box::new(main_hand),
+    Box::new(head),
 ];
+
+// 3. Rebuild stats (sorts by priority, applies in order)
+let mut player = StatBlock::new();
 player.rebuild_from_sources(&sources);
+
+// 4. Set current resources to max
+player.current_life = player.computed_max_life();
+player.current_mana = player.computed_max_mana();
 ```
 
-| Source | Priority | Description |
-|--------|----------|-------------|
-| `BaseStatsSource` | -100 | Level-based stats |
-| `GearSource` | 0 | Equipment |
-| `SkillTreeSource` | 100 | Passives |
-| `BuffSource` | 200 | Temporary effects |
+### Priority Order
+
+Sources are applied from lowest to highest priority. This ensures base stats are set before equipment modifies them.
+
+| Source | Priority | What It Provides |
+|--------|----------|------------------|
+| `BaseStatsSource` | -100 | Life (+12/level), mana (+6/level), base attributes (10 each) |
+| `GearSource` | 0 | Weapon damage, armour, evasion, affixes from items |
+| `SkillTreeSource` | 100 | Passive skill bonuses |
+| Custom buffs | 200+ | Temporary stat modifications |
+
+### BaseStatsSource
+
+Provides level-scaled base stats:
+
+```rust
+let base = BaseStatsSource::new(level);
+// Level 1:  62 life, 46 mana
+// Level 10: 170 life, 100 mana
+// Formula: 50 + (12 × level) life, 40 + (6 × level) mana
+```
+
+### GearSource
+
+Converts `loot_core::Item` into stat modifiers:
+
+```rust
+use loot_core::currency::apply_currency;
+
+// Generate and craft an item
+let mut sword = generator.generate("iron_sword", 42).unwrap();
+let transmute = generator.config().currencies.get("transmute").unwrap();
+apply_currency(&generator, &mut sword, transmute, &mut rng).unwrap();
+
+// Equip it
+let gear = GearSource::new(EquipmentSlot::MainHand, sword);
+```
+
+GearSource handles:
+- **Weapon stats**: Base damage, attack speed, crit chance
+- **Armour/Evasion**: From body armour, shields, helmets
+- **Affixes**: Both prefixes and suffixes with their stat modifiers
+- **Local vs Global scope**: Local modifiers (e.g., "increased physical damage" on weapons) apply to the item; global modifiers apply to all stats
+
+### Custom Sources
+
+Implement `StatSource` for custom stat providers:
+
+```rust
+use stat_core::{source::StatSource, stat_block::StatAccumulator};
+
+struct AuraSource {
+    increased_damage: f64,
+}
+
+impl StatSource for AuraSource {
+    fn id(&self) -> &str { "aura" }
+    fn priority(&self) -> i32 { 150 }  // After gear, before temporary buffs
+
+    fn apply(&self, acc: &mut StatAccumulator) {
+        acc.global_physical_damage.add_increased(self.increased_damage);
+    }
+}
+```
 
 ---
 
@@ -235,7 +342,7 @@ let heavy_strike = skills.get("heavy_strike").unwrap();
 
 ```rust
 use stat_core::{
-    StatBlock, DamagePacketGenerator, Effect,
+    StatBlock, DamagePacketGenerator,
     damage::calculate_damage,
     combat::resolve_damage,
 };
@@ -259,14 +366,15 @@ fn main() {
     let mut time = 0.0;
 
     while enemy.is_alive() && time < 10.0 {
-        // Attack
+        // Attack (immutable - returns new enemy state)
         let packet = calculate_damage(&player, &skill, "player".into(), &mut rng);
-        let result = resolve_damage(&mut enemy, &packet);
+        let (new_enemy, result) = resolve_damage(&enemy, &packet);
+        enemy = new_enemy;
 
         println!("[{:.1}s] {} damage → {:.0} HP",
             time, result.total_damage, enemy.current_life);
 
-        // Tick effects
+        // Tick effects (also immutable)
         if !enemy.effects.is_empty() {
             let (new_enemy, tick) = enemy.tick_effects(0.5);
             enemy = new_enemy;

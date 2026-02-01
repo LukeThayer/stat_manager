@@ -500,8 +500,9 @@ impl StatBlock {
         calculate_damage(self, skill, self.id.clone(), &mut rng)
     }
 
-    /// Receive damage from a damage packet, returning combat result
-    pub fn receive_damage(&mut self, packet: &DamagePacket) -> CombatResult {
+    /// Receive damage from a damage packet (immutable API)
+    /// Returns new state and combat result
+    pub fn receive_damage(&self, packet: &DamagePacket) -> (StatBlock, CombatResult) {
         resolve_damage(self, packet)
     }
 
