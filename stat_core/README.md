@@ -1,976 +1,290 @@
 # stat_core
 
-A comprehensive game mechanics library for stat management, damage calculation, and combat resolution in action RPGs. Built in Rust with a focus on correctness, configurability, and the triple-modifier (Flat/Increased/More) stacking model.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Core Concepts](#core-concepts)
-  - [StatValue: The Triple-Modifier Model](#statvalue-the-triple-modifier-model)
-  - [StatBlock: Character State](#statblock-character-state)
-  - [Stat Sources](#stat-sources)
-- [Skills & Damage](#skills--damage)
-  - [DamagePacketGenerator (Skills)](#damagepacketgenerator-skills)
-  - [Skill Fields Reference](#skill-fields-reference)
-  - [Damage Conversions](#damage-conversions)
-  - [Status Effect Conversions](#status-effect-conversions)
-- [Damage Calculation](#damage-calculation)
-  - [Calculation Flow](#calculation-flow)
-  - [Formulas](#formulas)
-- [Unified Effect System](#unified-effect-system)
-  - [Effect Types](#effect-types)
-  - [Immutable API](#immutable-api)
-  - [Effect Stacking](#effect-stacking)
-- [Status Effects & DoTs](#status-effects--dots)
-  - [Status Effects](#status-effects)
-  - [DoT System](#dot-system)
-  - [DoT Stacking Rules](#dot-stacking-rules)
-- [Defense Mechanics](#defense-mechanics)
-- [Configuration](#configuration)
-- [Examples](#examples)
-
----
-
-## Overview
-
-`stat_core` provides:
-
-- **StatBlock**: Aggregated character statistics from multiple sources (gear, buffs, skill tree, etc.)
-- **Unified Effect System**: Single `Effect` type for buffs, debuffs, and ailments with immutable API
-- **DamagePacketGenerator**: Configurable skill/ability definitions
-- **DamagePacket**: Calculated damage output with type breakdown, crits, penetration, and pending status effects
-- **DoT System**: Damage-over-time with configurable stacking rules
-- **Combat Resolution**: Applying damage against defenses (armour, evasion, resistances)
-- **Triple-Modifier Model**: Flat → Increased → More modifier stacking (like Path of Exile)
-
----
-
-## Installation
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-stat_core = { path = "../stat_core" }  # Or from your registry
-```
-
-Required dependencies:
-- `serde` (with `derive` feature)
-- `rand`
-- `loot_core` (for item/modifier types)
-
----
+A game mechanics library for stat management, damage calculation, and combat resolution in action RPGs. Built with the triple-modifier (Flat/Increased/More) stacking model.
 
 ## Quick Start
 
 ```rust
-use stat_core::{
-    StatBlock, DamagePacketGenerator, DotRegistry,
-    damage::calculate_damage,
-};
+use stat_core::{StatBlock, DamagePacketGenerator, damage::calculate_damage, combat::resolve_damage};
 use rand::thread_rng;
 
 fn main() {
-    // Create a character with some stats
-    let mut player = StatBlock::new();
-    player.weapon_physical_min = 50.0;
-    player.weapon_physical_max = 100.0;
-    player.weapon_attack_speed = 1.5;
-    player.global_physical_damage.add_increased(0.50); // 50% increased
+    // Create attacker with weapon stats
+    let mut attacker = StatBlock::new();
+    attacker.weapon_physical_min = 50.0;
+    attacker.weapon_physical_max = 100.0;
+    attacker.global_physical_damage.add_increased(0.50); // 50% increased damage
 
-    // Load or create a skill
+    // Create defender
+    let mut defender = StatBlock::new();
+    defender.max_life.base = 500.0;
+    defender.current_life = 500.0;
+    defender.armour.base = 200.0;
+
+    // Attack with basic attack
     let skill = DamagePacketGenerator::basic_attack();
-
-    // Calculate damage
-    let dot_registry = DotRegistry::with_defaults();
     let mut rng = thread_rng();
-    let damage_packet = calculate_damage(
-        &player,
-        &skill,
-        "player".to_string(),
-        &dot_registry,
-        &mut rng,
-    );
+    let packet = calculate_damage(&attacker, &skill, "attacker".into(), &mut rng);
+    let result = resolve_damage(&mut defender, &packet);
 
-    println!("Total damage: {}", damage_packet.total_damage());
-    println!("Is critical: {}", damage_packet.is_critical);
+    println!("Dealt {} damage, defender has {} HP remaining",
+        result.total_damage, defender.current_life);
 }
 ```
 
----
+## Installation
 
-## Architecture
-
-```
-stat_core/
-├── src/
-│   ├── lib.rs           # Public API exports
-│   ├── types.rs         # Core types: Effect, EffectType, StatMod, AilmentStacking, TickResult
-│   ├── stat_block/      # Character stat aggregation
-│   │   ├── mod.rs       # StatBlock definition + unified effect methods
-│   │   ├── stat_value.rs    # Triple-modifier StatValue
-│   │   ├── computed.rs      # Computed stat helpers
-│   │   └── aggregator.rs    # StatAccumulator for building stats
-│   ├── damage/          # Damage calculation system
-│   │   ├── mod.rs
-│   │   ├── generator.rs     # DamagePacketGenerator (skills)
-│   │   ├── calculation.rs   # Core damage formulas
-│   │   └── packet.rs        # DamagePacket output
-│   ├── defense/         # Defense mechanics
-│   │   ├── armour.rs
-│   │   ├── evasion.rs
-│   │   └── resistance.rs
-│   ├── dot/             # Damage-over-Time system (legacy)
-│   │   ├── mod.rs       # DotRegistry
-│   │   ├── types.rs     # DotConfig, DotStacking
-│   │   ├── active.rs    # ActiveDoT (legacy)
-│   │   └── tick.rs      # DoT tick processing
-│   ├── combat/          # Combat resolution
-│   │   ├── resolution.rs
-│   │   └── result.rs
-│   ├── source/          # Stat providers
-│   │   ├── base_stats.rs
-│   │   ├── gear.rs
-│   │   ├── buff.rs      # BuffSource (legacy)
-│   │   └── skill_tree.rs
-│   └── config/          # Configuration loading
-│       ├── skills.rs
-│       └── dots.rs
-└── config/
-    └── skills.toml      # Default skill definitions
+```toml
+[dependencies]
+stat_core = { path = "../stat_core" }
 ```
 
 ---
 
 ## Core Concepts
 
-### StatValue: The Triple-Modifier Model
+### StatValue: Triple-Modifier Model
 
-`StatValue` implements the industry-standard modifier stacking system:
+All stats use `StatValue` with the formula:
 
-```rust
-pub struct StatValue {
-    pub base: f64,       // Base value (from character level, skill, etc.)
-    pub flat: f64,       // Sum of all "+X" additions
-    pub increased: f64,  // Sum of all "% increased" (additive with each other)
-    pub more: Vec<f64>,  // List of "% more" multipliers (multiplicative)
-}
-```
-
-**Computation Formula:**
 ```
 Final = (base + flat) × (1 + increased) × ∏(1 + more[i])
 ```
 
-**Example:**
 ```rust
-let mut damage = StatValue::new(100.0);  // 100 base damage
-damage.add_flat(20.0);                    // +20 flat damage
-damage.add_increased(0.50);               // 50% increased damage
-damage.add_increased(0.30);               // 30% increased damage (stacks additively)
-damage.add_more(0.20);                    // 20% more damage
-damage.add_more(0.15);                    // 15% more damage (stacks multiplicatively)
-
-let final_damage = damage.compute();
-// = (100 + 20) × (1 + 0.50 + 0.30) × (1 + 0.20) × (1 + 0.15)
-// = 120 × 1.80 × 1.20 × 1.15
-// = 298.08
+let mut damage = StatValue::new(100.0);
+damage.add_flat(20.0);           // +20 flat
+damage.add_increased(0.50);      // 50% increased (additive with other increased)
+damage.add_more(0.20);           // 20% more (multiplicative)
+// Result: (100 + 20) × 1.50 × 1.20 = 216
 ```
 
-### StatBlock: Character State
+### StatBlock
 
-`StatBlock` is the complete representation of a character's stats:
-
-```rust
-pub struct StatBlock {
-    // === Resources ===
-    pub max_life: StatValue,
-    pub current_life: f64,
-    pub max_mana: StatValue,
-    pub current_mana: f64,
-    pub max_energy_shield: f64,
-    pub current_energy_shield: f64,
-
-    // === Attributes ===
-    pub strength: StatValue,
-    pub dexterity: StatValue,
-    pub intelligence: StatValue,
-    pub constitution: StatValue,
-    pub wisdom: StatValue,
-    pub charisma: StatValue,
-
-    // === Defenses ===
-    pub armour: StatValue,
-    pub evasion: StatValue,
-    pub fire_resistance: StatValue,      // -100% to +100%
-    pub cold_resistance: StatValue,
-    pub lightning_resistance: StatValue,
-    pub chaos_resistance: StatValue,
-
-    // === Offense (Global) ===
-    pub accuracy: StatValue,
-    pub global_physical_damage: StatValue,
-    pub global_fire_damage: StatValue,
-    pub global_cold_damage: StatValue,
-    pub global_lightning_damage: StatValue,
-    pub global_chaos_damage: StatValue,
-    pub attack_speed: StatValue,
-    pub cast_speed: StatValue,
-    pub critical_chance: StatValue,
-    pub critical_multiplier: StatValue,   // Base 1.5x (150%)
-
-    // === Penetration ===
-    pub fire_penetration: StatValue,
-    pub cold_penetration: StatValue,
-    pub lightning_penetration: StatValue,
-    pub chaos_penetration: StatValue,
-
-    // === Recovery ===
-    pub life_regen: StatValue,
-    pub mana_regen: StatValue,
-    pub life_leech: StatValue,
-    pub mana_leech: StatValue,
-
-    // === Weapon Stats ===
-    pub weapon_physical_min: f64,
-    pub weapon_physical_max: f64,
-    pub weapon_fire_min: f64,
-    pub weapon_fire_max: f64,
-    // ... other weapon damage types
-    pub weapon_attack_speed: f64,
-    pub weapon_crit_chance: f64,
-
-    // === Active Effects (Unified) ===
-    pub effects: Vec<Effect>,        // Unified effect system (preferred)
-
-    // === Legacy Active Effects ===
-    pub active_dots: Vec<ActiveDoT>,              // Legacy DoT tracking
-    pub active_buffs: Vec<ActiveBuff>,            // Legacy buff tracking
-    pub active_status_effects: Vec<ActiveStatusEffect>, // Legacy status effects
-
-    // === Status Effect Configuration ===
-    pub status_effect_stats: StatusEffectData,
-}
-```
-
-### Stat Sources
-
-Stats are aggregated from multiple sources with priority ordering:
-
-| Source | Priority | Description |
-|--------|----------|-------------|
-| `BaseStatsSource` | -100 | Character base stats, level scaling |
-| `GearSource` | 0 | Equipment modifiers |
-| `SkillTreeSource` | 100 | Passive skill tree |
-| `BuffSource` | 200 | Temporary buffs/debuffs |
-
-```rust
-use stat_core::{StatBlock, StatAccumulator, GearSource, StatSource};
-
-let mut accumulator = StatAccumulator::new();
-
-// Apply sources in priority order
-let gear = GearSource::from_items(&equipped_items);
-gear.apply(&mut accumulator);
-
-// Build final stats
-let mut stats = StatBlock::new();
-accumulator.apply_to(&mut stats);
-```
+Complete character state including:
+- **Resources**: life, mana, energy shield
+- **Attributes**: strength, dexterity, intelligence, etc.
+- **Defenses**: armour, evasion, resistances
+- **Offense**: damage stats, crit, penetration
+- **Weapon**: min/max damage, attack speed, crit chance
+- **Effects**: active buffs, debuffs, and ailments
 
 ---
 
-## Skills & Damage
+## Skills
 
-### DamagePacketGenerator (Skills)
-
-Skills are defined using `DamagePacketGenerator`:
+Skills are defined with `DamagePacketGenerator`:
 
 ```rust
-pub struct DamagePacketGenerator {
-    pub id: String,                    // Unique identifier
-    pub name: String,                  // Display name
-    pub base_damages: Vec<BaseDamage>, // Skill's own damage
-    pub weapon_effectiveness: f64,     // How much weapon damage to use
-    pub damage_effectiveness: f64,     // Scaling for added damage
-    pub attack_speed_modifier: f64,    // Speed multiplier
-    pub base_crit_chance: f64,         // Skill's crit chance
-    pub crit_multiplier_bonus: f64,    // Added crit multiplier
-    pub tags: Vec<SkillTag>,           // Categorization tags
-    pub status_conversions: SkillStatusConversions,
-    pub damage_conversions: DamageConversions,
-    pub type_effectiveness: DamageTypeEffectiveness,
-    pub hits_per_attack: u32,          // Multi-hit skills
-    pub can_chain: bool,               // Projectile chaining
-    pub chain_count: u32,
-    pub pierce_chance: f64,
-}
+let fireball = DamagePacketGenerator {
+    id: "fireball".into(),
+    name: "Fireball".into(),
+    base_damages: vec![BaseDamage::new(DamageType::Fire, 100.0, 150.0)],
+    weapon_effectiveness: 0.0,    // Spell - no weapon damage
+    damage_effectiveness: 1.0,    // Full scaling
+    base_crit_chance: 6.0,
+    tags: vec![SkillTag::Spell, SkillTag::Fire],
+    ..Default::default()
+};
 ```
 
-### Skill Fields Reference
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `id` | String | Required | Unique skill identifier |
-| `name` | String | Required | Display name |
-| `base_damages` | Vec | `[]` | Skill's inherent damage (not from weapon) |
-| `weapon_effectiveness` | f64 | `1.0` | **Portion of weapon damage used**. `0.0` = spell (no weapon), `1.0` = full attack, `0.5` = half weapon damage |
-| `damage_effectiveness` | f64 | `1.0` | **Multiplier for all damage scaling**. Affects added damage from gear. `1.5` = 150% of added damage applies |
-| `attack_speed_modifier` | f64 | `1.0` | Multiplies attack/cast speed. `0.85` = 15% slower, `1.1` = 10% faster |
-| `base_crit_chance` | f64 | `0.0` | Skill's base crit % (added to weapon crit for attacks) |
-| `crit_multiplier_bonus` | f64 | `0.0` | Added to crit multiplier (base is 1.5x) |
-| `tags` | Vec | `[]` | Skill tags for scaling (see below) |
-| `status_conversions` | Struct | Default | % of damage converted to status effects |
-| `damage_conversions` | Struct | Default | Convert damage types before scaling |
-| `type_effectiveness` | Struct | All 1.0 | Per-type damage multipliers |
-| `hits_per_attack` | u32 | `1` | Hits per use (e.g., Double Strike = 2) |
-| `can_chain` | bool | `false` | Whether projectiles chain |
-| `chain_count` | u32 | `0` | Number of chains |
-| `pierce_chance` | f64 | `0.0` | Chance to pierce (0.0-1.0) |
-
-#### Skill Tags
-
-```rust
-pub enum SkillTag {
-    Attack,     // Uses weapon, scales with attack modifiers
-    Spell,      // Doesn't use weapon, scales with spell modifiers
-    Physical,   // Deals physical damage
-    Fire,       // Deals fire damage
-    Cold,       // Deals cold damage
-    Lightning,  // Deals lightning damage
-    Chaos,      // Deals chaos damage
-    Elemental,  // Scales with elemental modifiers
-    Melee,      // Close range
-    Ranged,     // Long range
-    Projectile, // Fires projectiles
-    Aoe,        // Area of effect
-}
-```
-
-#### Weapon Effectiveness Explained
-
-`weapon_effectiveness` determines how much of your weapon's damage the skill uses:
-
-| Value | Meaning | Example Skills |
-|-------|---------|----------------|
-| `0.0` | Pure spell - no weapon damage | Fireball, Ice Nova |
-| `0.5` | Half weapon damage | Blade Vortex |
-| `0.91` | Slightly reduced (multi-hit balance) | Double Strike |
-| `1.0` | Full weapon damage | Basic Attack, Heavy Strike |
-| `1.3+` | More than 100% weapon damage | Ground Slam |
-
-#### Damage Effectiveness Explained
-
-`damage_effectiveness` multiplies ALL damage scaling, including:
-- Flat added damage from gear
-- Base damage from the skill
-- Per-type effectiveness bonuses
-
-| Value | Meaning | Use Case |
-|-------|---------|----------|
-| `0.5` | Half effectiveness | Very fast/multi-hit skills |
-| `1.0` | Normal | Standard skills |
-| `1.5` | 150% effectiveness | Slow, heavy-hitting skills |
-
-### Damage Conversions
-
-Convert damage from one type to another **before** damage scaling is applied.
-
-```rust
-pub struct DamageConversions {
-    pub physical_to_fire: f64,       // % of physical → fire
-    pub physical_to_cold: f64,
-    pub physical_to_lightning: f64,
-    pub physical_to_chaos: f64,
-    pub lightning_to_fire: f64,
-    pub lightning_to_cold: f64,
-    pub cold_to_fire: f64,
-    pub fire_to_chaos: f64,
-}
-```
-
-**Conversion Order:** Physical → Lightning → Cold → Fire → Chaos
-
-This order matters! Converted damage can be converted again in sequence:
-- Physical (50% to Lightning) → Lightning (50% to Cold) → Cold (50% to Fire)
-- Starting with 100 Physical: 50 Physical + 25 Lightning + 12.5 Cold + 12.5 Fire
-
-**Example - Molten Strike:**
-```toml
-[skills.damage_conversions]
-physical_to_fire = 0.6  # 60% of physical becomes fire
-```
-
-### Status Effect Conversions
-
-Convert hit damage into status effect applications.
-
-```rust
-pub struct SkillStatusConversions {
-    pub physical_to_poison: f64,    // Physical damage → Poison chance
-    pub chaos_to_poison: f64,       // Chaos damage → Poison chance
-    pub physical_to_bleed: f64,     // Physical damage → Bleed
-    pub fire_to_burn: f64,          // Fire damage → Burn
-    pub cold_to_freeze: f64,        // Cold damage → Freeze
-    pub cold_to_chill: f64,         // Cold damage → Chill
-    pub lightning_to_static: f64,   // Lightning damage → Static/Shock
-    pub chaos_to_fear: f64,         // Chaos damage → Fear
-    pub physical_to_slow: f64,      // Physical damage → Slow
-    pub cold_to_slow: f64,          // Cold damage → Slow
-}
-```
-
-These combine **additively** with player stat conversions:
-```
-Total Conversion = Skill Conversion + Player Stat Conversion
-```
-
-### Type Effectiveness
-
-Per-damage-type multipliers applied after conversion:
-
-```rust
-pub struct DamageTypeEffectiveness {
-    pub physical: f64,   // Default 1.0 (100%)
-    pub fire: f64,
-    pub cold: f64,
-    pub lightning: f64,
-    pub chaos: f64,
-}
-```
-
-**Example - Infernal Blow:**
-```toml
-[skills.type_effectiveness]
-fire = 1.6      # 160% fire damage effectiveness
-physical = 0.5  # Only 50% physical effectiveness
-```
-
----
-
-## Damage Calculation
-
-### Calculation Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DAMAGE CALCULATION FLOW                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. GATHER BASE DAMAGE                                          │
-│     ├── Skill base damages (rolled randomly)                    │
-│     └── Weapon damage × weapon_effectiveness (if attack)        │
-│                          ↓                                       │
-│  2. APPLY DAMAGE CONVERSIONS                                    │
-│     Physical → Lightning → Cold → Fire → Chaos                  │
-│                          ↓                                       │
-│  3. APPLY DAMAGE SCALING (per type)                             │
-│     base × increased_mult × more_mult × damage_eff × type_eff   │
-│                          ↓                                       │
-│  4. CALCULATE CRITICAL STRIKE                                   │
-│     ├── Crit chance: (base + flat) × increased × more           │
-│     └── If crit: damage × crit_multiplier                       │
-│                          ↓                                       │
-│  5. SET PENETRATION & ACCURACY                                  │
-│     From attacker's stats                                       │
-│                          ↓                                       │
-│  6. CALCULATE STATUS EFFECTS                                    │
-│     ├── Status damage = Σ(hit_damage × conversion%)             │
-│     ├── Apply chance = status_damage / target_max_health        │
-│     └── DoT DPS = base_dot% × status_damage × (1 + dot_increased)│
-│                          ↓                                       │
-│  7. OUTPUT: DamagePacket                                        │
-│     damages[], is_critical, penetration, status_effects[]       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Formulas
-
-#### Damage Scaling
-```
-Scaled Damage = Base × (1 + Increased%) × ∏(1 + More%) × DamageEffectiveness × TypeEffectiveness
-```
-
-Where:
-- **Base** = skill base damage + (weapon damage × weapon_effectiveness)
-- **Increased** = sum of all "% increased [type] damage" modifiers
-- **More** = product of all "% more [type] damage" modifiers
-- **DamageEffectiveness** = skill's `damage_effectiveness` value
-- **TypeEffectiveness** = skill's per-type multiplier
-
-#### Critical Strike Chance
-```
-Crit Chance = (BaseWeaponCrit + SkillBaseCrit + FlatCrit) × (1 + Increased%) × ∏(1 + More%)
-```
-
-Clamped to [0%, 100%].
-
-#### Critical Strike Damage
-```
-Crit Damage = Base Damage × (1.5 + CritMultiplierBonus + IncreasedCritMulti)
-```
-
-Base crit multiplier is 150% (1.5x).
-
-#### DPS Calculation
-```
-Hit DPS = AvgDamage × (1 + (CritMulti - 1) × CritChance) × AttackSpeed × HitsPerAttack
-DoT DPS = StatusDamage × BaseDotPercent × (1 + DotIncreased) × AttackSpeed
-Total DPS = Hit DPS + DoT DPS
-```
-
-#### Status Effect Application
-```
-Status Damage = Σ(HitDamage[type] × (SkillConversion[type] + PlayerConversion[type]))
-Apply Chance = min(1.0, StatusDamage / TargetMaxHealth)
-DoT DPS = BaseDotPercent × StatusDamage × (1 + DotIncreased%)
-```
+Key fields:
+| Field | Description |
+|-------|-------------|
+| `weapon_effectiveness` | 0.0 = spell, 1.0 = full weapon damage |
+| `damage_effectiveness` | Multiplier for all damage scaling |
+| `damage_conversions` | Convert physical → elemental before scaling |
+| `status_conversions` | % of damage that applies status effects |
 
 ---
 
 ## Unified Effect System
 
-The unified effect system replaces the separate `ActiveBuff`, `ActiveStatusEffect`, and `ActiveDoT` types with a single `Effect` type that can represent any temporary effect on an entity.
-
-### Effect Types
+All buffs, debuffs, and ailments use a single `Effect` type:
 
 ```rust
-pub struct Effect {
-    pub id: String,              // Unique identifier
-    pub name: String,            // Display name
-    pub effect_type: EffectType, // StatModifier or Ailment
-    pub duration_remaining: f64, // Time remaining (seconds)
-    pub total_duration: f64,     // Total duration (for % calculations)
-    pub stacks: u32,             // Current stack count
-    pub max_stacks: u32,         // Maximum allowed stacks
-    pub source_id: String,       // Source entity ID
-}
+use stat_core::{Effect, StatusEffect};
 
-pub enum EffectType {
-    /// Stat modifier effect (buff or debuff)
-    StatModifier {
-        modifiers: Vec<StatMod>,
-        is_debuff: bool,
-    },
-    /// Ailment effect (status effect like poison, bleed, etc.)
-    Ailment {
-        status: StatusEffect,
-        magnitude: f64,        // Effect strength (e.g., slow %)
-        dot_dps: f64,          // Damage per second
-        tick_rate: f64,        // Time between ticks
-        time_until_tick: f64,  // Time until next tick
-        stacking: AilmentStacking,
-        effectiveness: f64,    // Multiplier for stacking
-    },
-}
+// Create a poison effect using helper constructor
+let poison = Effect::poison(50.0, "attacker"); // 50 DPS
 
-pub struct StatMod {
-    pub stat: StatType,
-    pub value_per_stack: f64,
-    pub is_more: bool,  // "more" vs "increased" modifier
-}
-
-pub enum AilmentStacking {
-    StrongestOnly,           // Only strongest instance deals damage
-    Unlimited,               // All instances stack independently
-    Limited {
-        stack_effectiveness: f64,  // Effectiveness of additional stacks
-    },
-}
-```
-
-### Immutable API
-
-The unified effect system uses an immutable API pattern for clean state management:
-
-```rust
-// Add an effect (immutable - returns new StatBlock)
-let new_block = entity.with_effect(effect);
-
-// Or mutably
-entity.add_effect(effect);
-
-// Tick all effects (immutable - returns new StatBlock and result)
-let (new_entity, tick_result) = entity.tick_effects(delta_time);
-
-// TickResult contains:
-// - dot_damage: f64          - Total DoT damage dealt
-// - expired_effects: Vec<String> - IDs of effects that expired
-// - stat_effects_expired: bool   - Whether stat modifiers expired (triggers rebuild)
-// - life_remaining: f64      - Life after DoT damage
-// - is_dead: bool            - Whether entity died from DoT
-```
-
-**Example Usage:**
-
-```rust
-use stat_core::{Effect, AilmentStacking, StatusEffect};
-
-// Create a poison ailment
-let poison = Effect::new_ailment(
-    "poison_1",
-    "Poison",
-    StatusEffect::Poison,
-    5.0,   // duration
-    0.0,   // magnitude (not used for poison)
-    50.0,  // dot_dps
-    0.33,  // tick_rate
-    AilmentStacking::Unlimited,
-    "player",
-);
-
-// Add to entity
-let mut enemy = StatBlock::new();
+// Apply to target
 enemy.add_effect(poison);
 
-// Tick effects over time
-let (enemy, result) = enemy.tick_effects(1.0);
+// Tick effects over time (immutable API)
+let (new_enemy, result) = enemy.tick_effects(1.0);
 println!("DoT dealt {} damage", result.dot_damage);
-println!("Enemy HP: {}", result.life_remaining);
 ```
 
-### Effect Stacking
-
-| Stacking Mode | Behavior | Used By |
-|---------------|----------|---------|
-| `StrongestOnly` | Only strongest instance applies, weaker refresh duration | Burn, Freeze, Chill, Fear, Slow |
-| `Unlimited` | All instances stack independently | Poison |
-| `Limited` | Stacks up to max, additional at reduced effectiveness | Bleed, Static |
-
-**Creating stat modifier effects:**
+### Ailment Helpers
 
 ```rust
-use stat_core::{Effect, StatMod};
-use loot_core::types::StatType;
-
-let damage_buff = Effect::new_stat_modifier(
-    "berserk",
-    "Berserk",
-    10.0,  // duration
-    false, // is_debuff
-    vec![
-        StatMod {
-            stat: StatType::IncreasedPhysicalDamage,
-            value_per_stack: 20.0,  // 20% per stack
-            is_more: false,
-        },
-        StatMod {
-            stat: StatType::IncreasedAttackSpeed,
-            value_per_stack: 10.0,  // 10% per stack
-            is_more: false,
-        },
-    ],
-    "player",
-);
+Effect::poison(dps, source)   // Chaos DoT, unlimited stacking
+Effect::bleed(dps, source)    // Physical DoT, limited stacking
+Effect::burn(dps, source)     // Fire DoT, strongest only
+Effect::freeze(mag, source)   // Immobilize
+Effect::chill(mag, source)    // Slow
+Effect::shock(mag, source)    // Increased damage taken
+Effect::fear(mag, source)     // Flee
+Effect::slow(mag, source)     // Movement penalty
 ```
 
----
+### Stacking Rules
 
-## Status Effects & DoTs
-
-### Status Effects
-
-8 status effects are supported:
-
-| Status | Damage Type | Effect | DoT? |
-|--------|-------------|--------|------|
-| **Poison** | Chaos | Damage over time | Yes (20% base) |
-| **Bleed** | Physical | DoT, 2x while moving | Yes (20% base) |
-| **Burn** | Fire | Damage over time | Yes (25% base) |
-| **Freeze** | Cold | Immobilization | No |
-| **Chill** | Cold | Slow effect | No |
-| **Static** | Lightning | Shock (increased damage taken) | No |
-| **Fear** | Chaos | Flee/debuff | No |
-| **Slow** | Physical/Cold | Movement penalty | No |
-
-### DoT System
-
-DoT configuration via `DotConfig`:
-
-```rust
-pub struct DotConfig {
-    pub id: String,                // "burn", "poison", "bleed"
-    pub name: String,
-    pub damage_type: DamageType,
-    pub stacking: DotStacking,
-    pub base_duration: f64,        // Seconds
-    pub tick_rate: f64,            // Seconds between ticks
-    pub base_damage_percent: f64,  // % of status damage → DPS
-    pub max_stacks: u32,
-    pub stack_effectiveness: f64,  // Additional stack multiplier
-    pub moving_multiplier: f64,    // Extra damage while moving
-}
-```
-
-Default DoT configurations:
-
-| DoT | Duration | Tick Rate | Base DMG % | Stacking | Special |
-|-----|----------|-----------|------------|----------|---------|
-| Burn | 4.0s | 0.5s | 25% | Strongest Only | - |
-| Poison | 2.0s | 0.33s | 20% | Unlimited | - |
-| Bleed | 5.0s | 1.0s | 20% | Limited (8, 50%) | 2x while moving |
-
-### DoT Stacking Rules
-
-```rust
-pub enum DotStacking {
-    StrongestOnly,  // Only the highest damage instance deals damage
-    Unlimited,      // All instances stack independently
-    Limited {
-        max_stacks: u32,           // Maximum number of stacks
-        stack_effectiveness: f64,  // Additional stacks at reduced effectiveness
-    },
-}
-```
-
-**StrongestOnly** (Burn, Freeze, Chill, Fear, Slow):
-- Only the strongest instance deals damage
-- Weaker applications refresh duration if stronger
-
-**Unlimited** (Poison):
-- Every application adds a new instance
-- All deal full damage independently
-
-**Limited** (Bleed, Static):
-- First application is at full effectiveness
-- Additional stacks up to `max_stacks` at `stack_effectiveness`
-- At max: refreshes oldest stack
+| Mode | Behavior | Used By |
+|------|----------|---------|
+| `StrongestOnly` | Only strongest applies | Burn, Freeze, Chill |
+| `Unlimited` | All instances stack | Poison |
+| `Limited` | Up to max stacks | Bleed, Shock |
 
 ---
 
 ## Defense Mechanics
 
-### Armour (Physical Reduction)
-
+### Armour
+Reduces physical damage with diminishing returns:
 ```
-Reduction% = Armour / (Armour + ARMOUR_CONSTANT × Damage)
+Reduction% = Armour / (Armour + 10 × Damage)
 ```
-
-Armour is more effective against many small hits than few large hits.
 
 ### Evasion
-
+Caps maximum damage from a single hit:
 ```
-Chance to Evade = Evasion / (Evasion + Accuracy)
-Damage Cap = EVASION_SCALE_FACTOR × Evasion / Accuracy
+Damage Cap = Accuracy / (1 + Evasion/1000)
 ```
-
-If damage exceeds cap, always hits.
 
 ### Resistance
+Flat percentage reduction (capped at 75%):
+```
+Final = Damage × (1 - (Resistance - Penetration))
+```
+
+---
+
+## Combat Flow
 
 ```
-Final Damage = Hit Damage × (1 - EffectiveResist%)
-Effective Resist = Resist - Penetration
+1. calculate_damage() → DamagePacket
+   - Roll weapon/skill damage
+   - Apply damage conversions
+   - Apply scaling (increased/more)
+   - Calculate crit
+   - Generate pending status effects
+
+2. resolve_damage() → CombatResult
+   - Apply resistances
+   - Apply armour (physical only)
+   - Apply evasion cap
+   - Damage ES, then life
+   - Roll status effect applications
+   - Return damage breakdown
 ```
 
-Resistance capped at 100% (immunity) and -200% (triple damage).
+---
+
+## Stat Sources
+
+Build stats from multiple sources:
+
+```rust
+use stat_core::{StatBlock, source::{BaseStatsSource, GearSource, StatSource}};
+
+let mut player = StatBlock::new();
+let sources: Vec<Box<dyn StatSource>> = vec![
+    Box::new(BaseStatsSource::new(10)),  // Level 10 base stats
+    Box::new(GearSource::new(slot, item)),
+];
+player.rebuild_from_sources(&sources);
+```
+
+| Source | Priority | Description |
+|--------|----------|-------------|
+| `BaseStatsSource` | -100 | Level-based stats |
+| `GearSource` | 0 | Equipment |
+| `SkillTreeSource` | 100 | Passives |
+| `BuffSource` | 200 | Temporary effects |
 
 ---
 
 ## Configuration
 
-### Skills TOML Format
+Load skills from TOML:
 
 ```toml
 [[skills]]
-id = "fireball"
-name = "Fireball"
-tags = ["spell", "fire", "projectile", "aoe"]
-weapon_effectiveness = 0.0    # Pure spell
-damage_effectiveness = 1.0
-attack_speed_modifier = 1.0
-base_crit_chance = 6.0
-crit_multiplier_bonus = 0.0
-
-[[skills.base_damages]]
-type = "fire"
-min = 100
-max = 180
-
-[skills.damage_conversions]
-physical_to_fire = 0.0        # No conversions
+id = "heavy_strike"
+name = "Heavy Strike"
+tags = ["attack", "melee", "physical"]
+weapon_effectiveness = 1.0
+damage_effectiveness = 1.5
 
 [skills.status_conversions]
-fire_to_burn = 0.50           # 50% fire → burn
-
-[skills.type_effectiveness]
-fire = 1.3                    # 130% fire effectiveness
+physical_to_bleed = 0.25
 ```
 
-### Loading Skills
-
 ```rust
-use stat_core::config::default_skills;
+use stat_core::default_skills;
 
 let skills = default_skills();
-let fireball = skills.iter().find(|s| s.id == "fireball").unwrap();
+let heavy_strike = skills.get("heavy_strike").unwrap();
 ```
 
 ---
 
-## Examples
-
-### Example 1: Basic Attack Calculation
+## Full Example: Combat Loop
 
 ```rust
-use stat_core::{StatBlock, DamagePacketGenerator, DotRegistry};
-use stat_core::damage::calculate_damage;
+use stat_core::{
+    StatBlock, DamagePacketGenerator, Effect,
+    damage::calculate_damage,
+    combat::resolve_damage,
+};
 use rand::thread_rng;
 
-let mut player = StatBlock::new();
-player.weapon_physical_min = 50.0;
-player.weapon_physical_max = 100.0;
-player.global_physical_damage.add_increased(0.5); // 50% increased
+fn main() {
+    let mut player = StatBlock::new();
+    player.weapon_physical_min = 80.0;
+    player.weapon_physical_max = 120.0;
+    player.weapon_attack_speed = 1.4;
+    player.global_physical_damage.add_increased(0.75);
 
-let skill = DamagePacketGenerator::basic_attack();
-let dot_registry = DotRegistry::with_defaults();
-let mut rng = thread_rng();
+    let mut enemy = StatBlock::new();
+    enemy.max_life.base = 1000.0;
+    enemy.current_life = 1000.0;
+    enemy.armour.base = 500.0;
+    enemy.fire_resistance.base = 30.0;
 
-let packet = calculate_damage(&player, &skill, "player".to_string(), &dot_registry, &mut rng);
+    let skill = DamagePacketGenerator::basic_attack();
+    let mut rng = thread_rng();
+    let mut time = 0.0;
 
-// Expected: 75 avg × 1.5 = 112.5 avg damage
-println!("Damage: {}", packet.total_damage());
-```
+    while enemy.is_alive() && time < 10.0 {
+        // Attack
+        let packet = calculate_damage(&player, &skill, "player".into(), &mut rng);
+        let result = resolve_damage(&mut enemy, &packet);
 
-### Example 2: Elemental Conversion Skill
+        println!("[{:.1}s] {} damage → {:.0} HP",
+            time, result.total_damage, enemy.current_life);
 
-```rust
-use stat_core::{DamagePacketGenerator, DamageConversions, DamageTypeEffectiveness};
-use stat_core::types::SkillTag;
+        // Tick effects
+        if !enemy.effects.is_empty() {
+            let (new_enemy, tick) = enemy.tick_effects(0.5);
+            enemy = new_enemy;
+            if tick.dot_damage > 0.0 {
+                println!("  DoT: {} damage", tick.dot_damage);
+            }
+        }
 
-let molten_strike = DamagePacketGenerator {
-    id: "molten_strike".to_string(),
-    name: "Molten Strike".to_string(),
-    weapon_effectiveness: 1.0,
-    damage_effectiveness: 1.0,
-    hits_per_attack: 3,
-    tags: vec![SkillTag::Attack, SkillTag::Melee, SkillTag::Fire],
-    damage_conversions: DamageConversions {
-        physical_to_fire: 0.6, // 60% phys → fire
-        ..Default::default()
-    },
-    type_effectiveness: DamageTypeEffectiveness {
-        fire: 1.4, // 140% fire effectiveness
-        ..Default::default()
-    },
-    ..Default::default()
-};
-```
+        time += 1.0 / player.computed_attack_speed();
+    }
 
-### Example 3: DPS Calculation
-
-```rust
-use stat_core::{StatBlock, DamagePacketGenerator, DotRegistry};
-use stat_core::damage::calculate_skill_dps;
-
-let player = StatBlock::new();
-let skill = DamagePacketGenerator::basic_attack();
-let dot_registry = DotRegistry::with_defaults();
-
-let dps = calculate_skill_dps(&player, &skill, &dot_registry);
-println!("Skill DPS: {:.1}", dps);
-```
-
-### Example 4: Aggregating Stats from Gear
-
-```rust
-use stat_core::{StatBlock, StatAccumulator, GearSource, StatSource};
-
-let mut accumulator = StatAccumulator::new();
-
-// Apply gear stats
-let gear = GearSource::from_items(&my_equipped_items);
-gear.apply(&mut accumulator);
-
-// Build final stat block
-let mut player = StatBlock::new();
-accumulator.apply_to(&mut player);
-```
-
-### Example 5: Using the Unified Effect System
-
-```rust
-use stat_core::{StatBlock, Effect, AilmentStacking, StatusEffect};
-
-// Create an enemy
-let mut enemy = StatBlock::new();
-enemy.max_life.base = 500.0;
-enemy.current_life = 500.0;
-
-// Apply a poison ailment
-let poison = Effect::new_ailment(
-    "poison_from_viper_strike",
-    "Poison",
-    StatusEffect::Poison,
-    5.0,   // 5 second duration
-    0.0,   // magnitude (not used for DoT)
-    30.0,  // 30 DPS
-    0.33,  // tick every 0.33s
-    AilmentStacking::Unlimited,
-    "player",
-);
-enemy.add_effect(poison);
-
-// Simulate 2 seconds of time passing
-let (enemy, result) = enemy.tick_effects(2.0);
-
-println!("DoT damage dealt: {:.1}", result.dot_damage);
-println!("Enemy HP: {:.1}/{:.1}", result.life_remaining, enemy.computed_max_life());
-
-// Check active effects
-for effect in enemy.active_effects() {
-    println!("{}: {:.1}s remaining, {:.1} DPS",
-        effect.name,
-        effect.duration_remaining,
-        effect.dps()
-    );
+    println!("Combat ended at {:.1}s - Enemy {}",
+        time, if enemy.is_alive() { "survived" } else { "defeated" });
 }
-```
-
-### Example 6: Applying Buffs with the Effect System
-
-```rust
-use stat_core::{StatBlock, Effect, StatMod};
-use loot_core::types::StatType;
-
-let mut player = StatBlock::new();
-
-// Create a "Rage" buff that increases damage and attack speed
-let rage = Effect::new_stat_modifier(
-    "rage_buff",
-    "Rage",
-    8.0,   // 8 second duration
-    false, // not a debuff
-    vec![
-        StatMod {
-            stat: StatType::IncreasedPhysicalDamage,
-            value_per_stack: 25.0,  // 25% increased physical damage
-            is_more: false,
-        },
-        StatMod {
-            stat: StatType::IncreasedAttackSpeed,
-            value_per_stack: 15.0,  // 15% increased attack speed
-            is_more: false,
-        },
-    ],
-    "self",
-);
-
-// Add the buff (immutable pattern)
-let player = player.with_effect(rage);
-
-// The effect is now tracked
-assert_eq!(player.active_effects().len(), 1);
-assert!(!player.active_effects()[0].is_damaging());
 ```
 
 ---
 
 ## License
 
-MIT License - see workspace Cargo.toml for details.
+MIT

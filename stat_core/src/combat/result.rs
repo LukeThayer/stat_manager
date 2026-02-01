@@ -1,7 +1,6 @@
 //! CombatResult - Outcome of damage resolution
 
-use crate::dot::ActiveDoT;
-use crate::types::ActiveStatusEffect;
+use crate::types::Effect;
 use loot_core::types::DamageType;
 use serde::{Deserialize, Serialize};
 
@@ -24,13 +23,9 @@ pub struct CombatResult {
     /// Damage prevented by evasion cap
     pub damage_prevented_by_evasion: f64,
 
-    // === DoTs Applied ===
-    /// DoTs that were applied
-    pub dots_applied: Vec<ActiveDoT>,
-
-    // === Status Effects Applied ===
-    /// Status effects that were applied (based on chance = status_damage / max_health)
-    pub status_effects_applied: Vec<ActiveStatusEffect>,
+    // === Effects Applied ===
+    /// Effects that were applied (unified Effect system)
+    pub effects_applied: Vec<Effect>,
 
     // === State Changes ===
     /// ES before damage
@@ -58,8 +53,7 @@ impl Default for CombatResult {
             damage_reduced_by_armour: 0.0,
             damage_reduced_by_resists: 0.0,
             damage_prevented_by_evasion: 0.0,
-            dots_applied: Vec::new(),
-            status_effects_applied: Vec::new(),
+            effects_applied: Vec::new(),
             es_before: 0.0,
             es_after: 0.0,
             life_before: 0.0,

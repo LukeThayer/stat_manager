@@ -157,6 +157,140 @@ impl Effect {
         }
     }
 
+    // === Ailment Constructors ===
+
+    /// Create a Poison effect (Chaos DoT, unlimited stacking)
+    /// - Duration: 2.0s
+    /// - Tick rate: 0.33s
+    /// - Stacking: Unlimited
+    pub fn poison(dot_dps: f64, source_id: impl Into<String>) -> Self {
+        Self::new_ailment(
+            "poison", "Poison", StatusEffect::Poison,
+            2.0, 0.0, dot_dps, 0.33,
+            AilmentStacking::Unlimited,
+            source_id,
+        )
+    }
+
+    /// Create a Bleed effect (Physical DoT, limited stacking)
+    /// - Duration: 5.0s
+    /// - Tick rate: 1.0s
+    /// - Stacking: Limited (50% effectiveness for additional stacks)
+    /// - Note: Deals 2x damage while target is moving (handled externally)
+    pub fn bleed(dot_dps: f64, source_id: impl Into<String>) -> Self {
+        let mut effect = Self::new_ailment(
+            "bleed", "Bleed", StatusEffect::Bleed,
+            5.0, 0.0, dot_dps, 1.0,
+            AilmentStacking::Limited { stack_effectiveness: 0.5 },
+            source_id,
+        );
+        effect.max_stacks = 8;
+        effect
+    }
+
+    /// Create a Burn effect (Fire DoT, strongest only)
+    /// - Duration: 4.0s
+    /// - Tick rate: 0.5s
+    /// - Stacking: Strongest only
+    pub fn burn(dot_dps: f64, source_id: impl Into<String>) -> Self {
+        Self::new_ailment(
+            "burn", "Burn", StatusEffect::Burn,
+            4.0, 0.0, dot_dps, 0.5,
+            AilmentStacking::StrongestOnly,
+            source_id,
+        )
+    }
+
+    /// Create a Freeze effect (Cold, no damage, strongest only)
+    /// - Duration: 0.5s (short immobilization)
+    /// - Stacking: Strongest only
+    pub fn freeze(magnitude: f64, source_id: impl Into<String>) -> Self {
+        Self::new_ailment(
+            "freeze", "Freeze", StatusEffect::Freeze,
+            0.5, magnitude, 0.0, 0.1,
+            AilmentStacking::StrongestOnly,
+            source_id,
+        )
+    }
+
+    /// Create a Chill effect (Cold, no damage, strongest only)
+    /// - Duration: 2.0s
+    /// - Magnitude: slow percentage
+    /// - Stacking: Strongest only
+    pub fn chill(magnitude: f64, source_id: impl Into<String>) -> Self {
+        Self::new_ailment(
+            "chill", "Chill", StatusEffect::Chill,
+            2.0, magnitude, 0.0, 0.5,
+            AilmentStacking::StrongestOnly,
+            source_id,
+        )
+    }
+
+    /// Create a Static/Shock effect (Lightning, no damage, limited stacking)
+    /// - Duration: 1.0s
+    /// - Magnitude: increased damage taken
+    /// - Stacking: Limited (up to 3 stacks)
+    pub fn shock(magnitude: f64, source_id: impl Into<String>) -> Self {
+        let mut effect = Self::new_ailment(
+            "static", "Static", StatusEffect::Static,
+            1.0, magnitude, 0.0, 0.25,
+            AilmentStacking::Limited { stack_effectiveness: 1.0 },
+            source_id,
+        );
+        effect.max_stacks = 3;
+        effect
+    }
+
+    /// Create a Fear effect (Chaos, no damage, strongest only)
+    /// - Duration: 1.5s
+    /// - Stacking: Strongest only
+    pub fn fear(magnitude: f64, source_id: impl Into<String>) -> Self {
+        Self::new_ailment(
+            "fear", "Fear", StatusEffect::Fear,
+            1.5, magnitude, 0.0, 0.5,
+            AilmentStacking::StrongestOnly,
+            source_id,
+        )
+    }
+
+    /// Create a Slow effect (Physical/Cold, no damage, strongest only)
+    /// - Duration: 3.0s
+    /// - Magnitude: slow percentage
+    /// - Stacking: Strongest only
+    pub fn slow(magnitude: f64, source_id: impl Into<String>) -> Self {
+        Self::new_ailment(
+            "slow", "Slow", StatusEffect::Slow,
+            3.0, magnitude, 0.0, 0.5,
+            AilmentStacking::StrongestOnly,
+            source_id,
+        )
+    }
+
+    /// Get the base duration for a status effect type
+    pub fn base_duration_for(status: StatusEffect) -> f64 {
+        match status {
+            StatusEffect::Poison => 2.0,
+            StatusEffect::Bleed => 5.0,
+            StatusEffect::Burn => 4.0,
+            StatusEffect::Freeze => 0.5,
+            StatusEffect::Chill => 2.0,
+            StatusEffect::Static => 1.0,
+            StatusEffect::Fear => 1.5,
+            StatusEffect::Slow => 3.0,
+        }
+    }
+
+    /// Get the base DoT damage percentage for a status effect type
+    /// Returns the percentage of status damage that becomes DPS
+    pub fn base_dot_percent_for(status: StatusEffect) -> f64 {
+        match status {
+            StatusEffect::Poison => 0.20,  // 20%
+            StatusEffect::Bleed => 0.20,   // 20%
+            StatusEffect::Burn => 0.25,    // 25%
+            _ => 0.0,  // Non-damaging
+        }
+    }
+
     /// Check if the effect is still active
     pub fn is_active(&self) -> bool {
         self.duration_remaining > 0.0 && self.stacks > 0

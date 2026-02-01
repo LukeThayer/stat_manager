@@ -27,7 +27,6 @@ use ratatui::{
 use stat_core::{
     combat::resolve_damage,
     damage::{calculate_damage, calculate_skill_dps, DamagePacketGenerator},
-    dot::DotRegistry,
     source::{BaseStatsSource, GearSource, StatSource},
     stat_block::StatBlock,
     DamageType, EquipmentSlot, ItemClass, Rarity,
@@ -73,7 +72,6 @@ struct GameState {
 
     // Systems
     generator: Generator,
-    dot_registry: DotRegistry,
     rng: ChaCha8Rng,
 }
 
@@ -207,7 +205,6 @@ impl GameState {
 
         let generator = Generator::new(config);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let dot_registry = DotRegistry::with_defaults();
 
         // Create player with starting weapon
         let mut player_equipment = HashMap::new();
@@ -258,7 +255,6 @@ impl GameState {
             selected_index: 0,
             equipment_slot_index: 0,
             generator,
-            dot_registry,
             rng,
         };
 
@@ -328,11 +324,10 @@ impl GameState {
             &self.player,
             skill,
             "player".to_string(),
-            &self.dot_registry,
             &mut self.rng,
         );
 
-        let result = resolve_damage(&mut self.enemy, &packet, &self.dot_registry);
+        let result = resolve_damage(&mut self.enemy, &packet);
 
         // Advance time by attack interval (modified by skill)
         let attack_speed = self.player.attack_speed.compute() * self.player.weapon_attack_speed;
@@ -475,7 +470,7 @@ impl GameState {
 
     fn calculate_dps(&self) -> f64 {
         let skill = &self.skills[self.selected_skill];
-        calculate_skill_dps(&self.player, skill, &self.dot_registry)
+        calculate_skill_dps(&self.player, skill)
     }
 }
 

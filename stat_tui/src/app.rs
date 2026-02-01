@@ -5,7 +5,6 @@ use stat_core::{
     combat::resolve_damage,
     damage::{calculate_damage, DamagePacketGenerator},
     default_skills,
-    dot::DotRegistry,
     source::{BaseStatsSource, GearSource, StatSource},
     stat_block::StatBlock,
     types::EquipmentSlot,
@@ -117,7 +116,6 @@ pub struct App {
     pub skills: Vec<DamagePacketGenerator>,
     pub selected_skill: usize,
     pub combat_log: Vec<String>,
-    pub dot_registry: DotRegistry,
     pub rng: rand::rngs::StdRng,
     pub show_help: bool,
     pub stats_scroll: usize,
@@ -318,7 +316,6 @@ impl App {
             skills,
             selected_skill: 0,
             combat_log: vec!["Combat simulation ready.".to_string()],
-            dot_registry: DotRegistry::with_defaults(),
             rng: rand::rngs::StdRng::seed_from_u64(42),
             show_help: false,
             stats_scroll: 0,
@@ -497,7 +494,6 @@ impl App {
             &self.player,
             skill,
             "player".to_string(),
-            &self.dot_registry,
             &mut self.rng,
         );
 
@@ -581,7 +577,7 @@ impl App {
         ));
 
         // === DAMAGE RESOLUTION ===
-        let result = resolve_damage(&mut self.enemy, &packet, &self.dot_registry);
+        let result = resolve_damage(&mut self.enemy, &packet);
 
         self.combat_log.push("  ── Defense Calculation ──".to_string());
 
@@ -659,53 +655,58 @@ impl App {
             ));
         }
 
-        // DoT applications
-        if !result.dots_applied.is_empty() {
-            for dot in &result.dots_applied {
-                self.combat_log.push(format!(
-                    "  🔥 Applied {} ({:.0} DPS × {:.1}s = {:.0} total)",
-                    dot.dot_type,
-                    dot.dps(),
-                    dot.duration_remaining,
-                    dot.total_remaining_damage()
-                ));
-            }
-        }
+        // Effect applications (unified Effect system)
+        if !result.effects_applied.is_empty() {
+            for effect in &result.effects_applied {
+                let icon = match &effect.effect_type {
+                    stat_core::types::EffectType::Ailment { status, .. } => match status {
+                        StatusEffect::Poison => "☠️",
+                        StatusEffect::Bleed => "🩸",
+                        StatusEffect::Burn => "🔥",
+                        StatusEffect::Freeze => "❄️",
+                        StatusEffect::Chill => "🥶",
+                        StatusEffect::Static => "⚡",
+                        StatusEffect::Fear => "😱",
+                        StatusEffect::Slow => "🐌",
+                    },
+                    stat_core::types::EffectType::StatModifier { is_debuff, .. } => {
+                        if *is_debuff { "⬇️" } else { "⬆️" }
+                    }
+                };
 
-        // Status effect applications
-        if !result.status_effects_applied.is_empty() {
-            for status in &result.status_effects_applied {
-                let icon = match status.effect_type {
-                    stat_core::StatusEffect::Poison => "☠️",
-                    stat_core::StatusEffect::Bleed => "🩸",
-                    stat_core::StatusEffect::Burn => "🔥",
-                    stat_core::StatusEffect::Freeze => "❄️",
-                    stat_core::StatusEffect::Chill => "🥶",
-                    stat_core::StatusEffect::Static => "⚡",
-                    stat_core::StatusEffect::Fear => "😱",
-                    stat_core::StatusEffect::Slow => "🐌",
-                };
-                // Show DoT DPS for damaging statuses
-                let info = if status.is_damaging() && status.dot_dps > 0.0 {
-                    format!(
-                        "  {} Applied {:?} ({:.0} DPS, {:.1}s)",
-                        icon, status.effect_type, status.dot_dps, status.duration_remaining
-                    )
+                // Show DoT DPS for ailments with DoT
+                if let stat_core::types::EffectType::Ailment { dot_dps, magnitude, .. } = &effect.effect_type {
+                    if *dot_dps > 0.0 {
+                        self.combat_log.push(format!(
+                            "  {} Applied {} ({:.0} DPS, {:.1}s)",
+                            icon, effect.name, dot_dps, effect.duration_remaining
+                        ));
+                    } else {
+                        self.combat_log.push(format!(
+                            "  {} Applied {} ({:.1}s, {:.0}% magnitude)",
+                            icon, effect.name, effect.duration_remaining, magnitude * 100.0
+                        ));
+                    }
                 } else {
-                    format!(
-                        "  {} Applied {:?} ({:.1}s, {:.0}% magnitude)",
-                        icon, status.effect_type, status.duration_remaining, status.magnitude * 100.0
-                    )
-                };
-                self.combat_log.push(info);
+                    self.combat_log.push(format!(
+                        "  {} Applied {} ({:.1}s)",
+                        icon, effect.name, effect.duration_remaining
+                    ));
+                }
             }
         }
 
         // Show pending status effects that didn't apply (for info)
         if !packet.status_effects_to_apply.is_empty() {
             let target_max_health = self.enemy.computed_max_life();
-            let applied_types: Vec<_> = result.status_effects_applied.iter()
-                .map(|s| s.effect_type)
+            let applied_types: Vec<_> = result.effects_applied.iter()
+                .filter_map(|e| {
+                    if let stat_core::types::EffectType::Ailment { status, .. } = &e.effect_type {
+                        Some(*status)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
 
             for pending in &packet.status_effects_to_apply {
@@ -766,95 +767,6 @@ impl App {
             }
         }
 
-        // === Legacy: Process DoT ticks (for backward compatibility) ===
-        if !self.enemy.active_dots.is_empty() {
-            let mut configs = std::collections::HashMap::new();
-            for dot_type in ["ignite", "poison", "bleed"] {
-                if let Some(config) = self.dot_registry.get(dot_type) {
-                    configs.insert(dot_type.to_string(), config.clone());
-                }
-            }
-
-            let result = stat_core::dot::tick::process_dot_tick(
-                &mut self.enemy.active_dots,
-                seconds,
-                false,
-                &configs,
-            );
-
-            if result.total_damage > 0.0 {
-                self.enemy.current_life -= result.total_damage;
-                self.combat_log.push(format!(
-                    "[{:.1}s] DoT deals {:.0} damage ({:.0} HP remaining)",
-                    self.time_elapsed, result.total_damage, self.enemy.current_life
-                ));
-
-                if self.enemy.current_life <= 0.0 {
-                    self.enemy.current_life = 0.0;
-                    self.combat_log.push("  → ENEMY DEFEATED by DoT!".to_string());
-                }
-            }
-
-            for expired in &result.expired_dots {
-                self.combat_log
-                    .push(format!("[{:.1}s] {} expired", self.time_elapsed, expired));
-            }
-        }
-
-        // === Legacy: Process status effect ticks (for backward compatibility) ===
-        if !self.enemy.active_status_effects.is_empty() {
-            let mut total_status_damage = 0.0;
-            let mut damage_by_type: Vec<(StatusEffect, f64)> = Vec::new();
-            let mut expired: Vec<StatusEffect> = Vec::new();
-
-            for effect in &mut self.enemy.active_status_effects {
-                let damage = effect.tick(seconds);
-                if damage > 0.0 {
-                    total_status_damage += damage;
-                    damage_by_type.push((effect.effect_type, damage));
-                }
-                if !effect.is_active() {
-                    expired.push(effect.effect_type);
-                }
-            }
-
-            // Apply status effect damage
-            if total_status_damage > 0.0 {
-                self.enemy.current_life -= total_status_damage;
-
-                // Build damage breakdown
-                let breakdown: Vec<String> = damage_by_type
-                    .iter()
-                    .map(|(effect, dmg)| format!("{:?}: {:.0}", effect, dmg))
-                    .collect();
-
-                self.combat_log.push(format!(
-                    "[{:.1}s] Status effects deal {:.0} damage [{}] ({:.0} HP)",
-                    self.time_elapsed,
-                    total_status_damage,
-                    breakdown.join(", "),
-                    self.enemy.current_life
-                ));
-
-                if self.enemy.current_life <= 0.0 {
-                    self.enemy.current_life = 0.0;
-                    self.combat_log
-                        .push("  → ENEMY DEFEATED by status effects!".to_string());
-                }
-            }
-
-            // Remove expired effects and log
-            self.enemy
-                .active_status_effects
-                .retain(|e| e.is_active());
-
-            for effect_type in expired {
-                self.combat_log.push(format!(
-                    "[{:.1}s] {:?} expired",
-                    self.time_elapsed, effect_type
-                ));
-            }
-        }
     }
 
     pub fn tick(&mut self, _delta: f64) {
@@ -863,11 +775,7 @@ impl App {
 
     pub fn reset(&mut self) {
         self.enemy.current_life = self.enemy.computed_max_life();
-        // Clear unified effects
         self.enemy.clear_effects();
-        // Clear legacy effects (for backward compatibility)
-        self.enemy.active_dots.clear();
-        self.enemy.active_status_effects.clear();
         self.combat_log.clear();
         self.combat_log.push("Combat reset.".to_string());
         self.time_elapsed = 0.0;

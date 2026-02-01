@@ -8,7 +8,6 @@ use loot_core::types::{Rarity, DamageType};
 use stat_core::{
     combat::resolve_damage,
     damage::{calculate_damage, DamagePacketGenerator},
-    dot::DotRegistry,
     source::{BaseStatsSource, GearSource, StatSource},
     stat_block::StatBlock,
     types::EquipmentSlot,
@@ -236,7 +235,6 @@ fn test_full_item_to_combat_flow() {
     );
     println!("  Status Conversions: 70% Physical -> Bleed");
 
-    let dot_registry = DotRegistry::with_defaults();
     let mut attack_rng = Generator::make_rng(789);
 
     // Perform multiple attacks
@@ -247,7 +245,6 @@ fn test_full_item_to_combat_flow() {
             &player,
             &skill,
             "player".to_string(),
-            &dot_registry,
             &mut attack_rng,
         );
 
@@ -271,7 +268,7 @@ fn test_full_item_to_combat_flow() {
         }
 
         // Resolve damage
-        let result = resolve_damage(&mut enemy, &packet, &dot_registry);
+        let result = resolve_damage(&mut enemy, &packet);
 
         println!("  Combat Result:");
         println!("    Damage Dealt: {:.0}", result.total_damage);
@@ -279,15 +276,20 @@ fn test_full_item_to_combat_flow() {
         println!("    Reduced by Resists: {:.0}", result.damage_reduced_by_resists);
         println!("    Enemy HP: {:.0}/{:.0}", enemy.current_life, enemy.computed_max_life());
 
-        if !result.status_effects_applied.is_empty() {
-            println!("    Status Effects Applied:");
-            for effect in &result.status_effects_applied {
-                if effect.is_damaging() {
-                    println!("      {:?}: {:.0} DPS for {:.1}s",
-                        effect.effect_type, effect.dot_dps, effect.duration_remaining);
+        if !result.effects_applied.is_empty() {
+            println!("    Effects Applied:");
+            for effect in &result.effects_applied {
+                if let stat_core::types::EffectType::Ailment { dot_dps, .. } = &effect.effect_type {
+                    if *dot_dps > 0.0 {
+                        println!("      {}: {:.0} DPS for {:.1}s",
+                            effect.name, dot_dps, effect.duration_remaining);
+                    } else {
+                        println!("      {}: {:.1}s duration",
+                            effect.name, effect.duration_remaining);
+                    }
                 } else {
-                    println!("      {:?}: {:.1}s duration",
-                        effect.effect_type, effect.duration_remaining);
+                    println!("      {}: {:.1}s duration",
+                        effect.name, effect.duration_remaining);
                 }
             }
         }
@@ -299,50 +301,46 @@ fn test_full_item_to_combat_flow() {
     }
 
     // =========================================================================
-    // STEP 8: Process status effect ticks
+    // STEP 8: Process effect ticks (using unified Effect system)
     // =========================================================================
-    if !enemy.active_status_effects.is_empty() && enemy.is_alive() {
-        separator("STEP 8: Processing Status Effect Ticks");
+    if !enemy.effects.is_empty() && enemy.is_alive() {
+        separator("STEP 8: Processing Effect Ticks");
 
-        println!("  Active Status Effects on Enemy:");
-        for effect in &enemy.active_status_effects {
-            let info = if effect.is_damaging() {
-                format!("{:?} x{}: {:.0} DPS, {:.1}s remaining",
-                    effect.effect_type, effect.stacks, effect.dot_dps * effect.stacks as f64, effect.duration_remaining)
+        println!("  Active Effects on Enemy:");
+        for effect in &enemy.effects {
+            if let stat_core::types::EffectType::Ailment { dot_dps, .. } = &effect.effect_type {
+                if *dot_dps > 0.0 {
+                    println!("    {}: {:.0} DPS, {:.1}s remaining",
+                        effect.name, dot_dps, effect.duration_remaining);
+                } else {
+                    println!("    {}: {:.1}s remaining",
+                        effect.name, effect.duration_remaining);
+                }
             } else {
-                format!("{:?} x{}: {:.1}s remaining",
-                    effect.effect_type, effect.stacks, effect.duration_remaining)
-            };
-            println!("    {}", info);
+                println!("    {}: {:.1}s remaining",
+                    effect.name, effect.duration_remaining);
+            }
         }
 
-        // Simulate 5 seconds of status effect ticks
-        println!("\n  Simulating 5 seconds of status effect damage...\n");
+        // Simulate 5 seconds of effect ticks
+        println!("\n  Simulating 5 seconds of effect damage...\n");
 
         for second in 1..=5 {
-            let mut total_damage = 0.0;
+            let (new_enemy, tick_result) = enemy.tick_effects(1.0);
+            enemy = new_enemy;
 
-            for effect in &mut enemy.active_status_effects {
-                let damage = effect.tick(1.0);
-                total_damage += damage;
+            if tick_result.dot_damage > 0.0 {
+                println!("  [{}s] Effects deal {:.0} damage (Enemy HP: {:.0})",
+                    second, tick_result.dot_damage, tick_result.life_remaining.max(0.0));
             }
 
-            if total_damage > 0.0 {
-                enemy.current_life -= total_damage;
-                println!("  [{}s] Status effects deal {:.0} damage (Enemy HP: {:.0})",
-                    second, total_damage, enemy.current_life.max(0.0));
-            }
-
-            // Remove expired effects
-            enemy.active_status_effects.retain(|e| e.is_active());
-
-            if enemy.current_life <= 0.0 {
-                println!("  ENEMY DEFEATED by status effects!");
+            if tick_result.is_dead {
+                println!("  ENEMY DEFEATED by effects!");
                 break;
             }
 
-            if enemy.active_status_effects.is_empty() {
-                println!("  All status effects expired.");
+            if enemy.effects.is_empty() {
+                println!("  All effects expired.");
                 break;
             }
         }

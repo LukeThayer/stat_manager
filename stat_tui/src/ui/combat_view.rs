@@ -181,7 +181,7 @@ fn draw_damage_preview(f: &mut Frame, app: &App, area: Rect) {
     let player = &app.player;
     let enemy = &app.enemy;
 
-    let dps = calculate_skill_dps(player, skill, &app.dot_registry);
+    let dps = calculate_skill_dps(player, skill);
 
     let mut lines = vec![
         Line::from(Span::styled(

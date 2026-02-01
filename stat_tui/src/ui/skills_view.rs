@@ -10,6 +10,7 @@ use ratatui::{
     Frame,
 };
 use stat_core::damage::calculate_skill_dps;
+use stat_core::types::Effect;
 use stat_core::StatusEffect;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -59,7 +60,7 @@ fn draw_skill_list(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_skill_details(f: &mut Frame, app: &App, area: Rect) {
     let skill = &app.skills[app.selected_skill];
-    let dps = calculate_skill_dps(&app.player, skill, &app.dot_registry);
+    let dps = calculate_skill_dps(&app.player, skill);
 
     let mut lines = vec![
         Line::from(Span::styled(
@@ -601,11 +602,11 @@ fn draw_skill_details(f: &mut Frame, app: &App, area: Rect) {
             }
 
             if total_status_damage > 0.0 {
-                let base_percent = app.dot_registry.get_base_damage_percent(status);
+                let base_percent = Effect::base_dot_percent_for(status);
                 let stats = app.player.status_effect_stats.get_stats(status);
                 let dot_increased = 1.0 + stats.dot_increased;
                 let status_dot_dps = base_percent * total_status_damage * dot_increased * speed;
-                let duration = app.dot_registry.get_base_duration(status) * (1.0 + stats.duration_increased);
+                let duration = Effect::base_duration_for(status) * (1.0 + stats.duration_increased);
                 let dot_type_color = damage_type_color(dot_damage_type);
 
                 lines.push(Line::from(vec![

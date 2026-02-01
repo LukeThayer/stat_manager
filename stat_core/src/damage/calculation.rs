@@ -1,8 +1,8 @@
 //! Damage calculation - turning a skill + stats into a DamagePacket
 
 use super::{DamagePacket, DamagePacketGenerator, PendingStatusEffect, SkillStatusConversions};
-use crate::dot::DotRegistry;
 use crate::stat_block::{StatusEffectData, StatusEffectStats, StatBlock};
+use crate::types::Effect;
 use loot_core::types::{DamageType, StatusEffect};
 use rand::Rng;
 use std::collections::HashMap;
@@ -12,7 +12,6 @@ pub fn calculate_damage(
     attacker: &StatBlock,
     skill: &DamagePacketGenerator,
     source_id: String,
-    dot_registry: &DotRegistry,
     rng: &mut impl Rng,
 ) -> DamagePacket {
     let mut packet = DamagePacket::new(source_id, skill.id.clone());
@@ -135,13 +134,13 @@ pub fn calculate_damage(
 
         if status_damage > 0.0 {
             let stats = attacker.status_effect_stats.get_stats(status);
-            let base_duration = dot_registry.get_base_duration(status);
+            let base_duration = Effect::base_duration_for(status);
             let duration = base_duration * (1.0 + stats.duration_increased);
             let magnitude = 1.0 + stats.magnitude;
 
             // For damaging DoTs, calculate DoT DPS based on status damage
-            let base_dot_percent = dot_registry.get_base_damage_percent(status);
-            let dot_dps = calculate_status_dot_dps(base_dot_percent, status_damage, &stats);
+            let base_dot_percent = Effect::base_dot_percent_for(status);
+            let dot_dps = calculate_status_dot_dps(base_dot_percent, status_damage, stats);
 
             packet.status_effects_to_apply.push(PendingStatusEffect::new_with_dot(
                 status,
@@ -218,7 +217,6 @@ fn calculate_crit_chance(attacker: &StatBlock, skill: &DamagePacketGenerator) ->
 pub fn calculate_skill_dps(
     attacker: &StatBlock,
     skill: &DamagePacketGenerator,
-    dot_registry: &DotRegistry,
 ) -> f64 {
     // Use average damage instead of random
     let avg_damages = calculate_average_damage_by_type(attacker, skill);
@@ -251,7 +249,7 @@ pub fn calculate_skill_dps(
 
         if status_damage > 0.0 {
             let stats = attacker.status_effect_stats.get_stats(status);
-            let base_dot_percent = dot_registry.get_base_damage_percent(status);
+            let base_dot_percent = Effect::base_dot_percent_for(status);
             let status_dot_dps = calculate_status_dot_dps(base_dot_percent, status_damage, stats);
             // Scale by attack speed (more hits = more DoT applications)
             dot_dps += status_dot_dps * speed;
@@ -349,8 +347,7 @@ mod tests {
         };
 
         let mut rng = make_test_rng();
-        let dot_registry = DotRegistry::new();
-        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &dot_registry, &mut rng);
+        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &mut rng);
 
         // With no scaling, should deal base damage
         assert!((packet.total_damage() - 100.0).abs() < 1.0);
@@ -370,8 +367,7 @@ mod tests {
         };
 
         let mut rng = make_test_rng();
-        let dot_registry = DotRegistry::new();
-        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &dot_registry, &mut rng);
+        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &mut rng);
 
         // 100 * 1.5 = 150
         assert!((packet.total_damage() - 150.0).abs() < 1.0);
@@ -393,8 +389,7 @@ mod tests {
         };
 
         let mut rng = make_test_rng();
-        let dot_registry = DotRegistry::new();
-        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &dot_registry, &mut rng);
+        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &mut rng);
 
         // Should deal weapon damage
         assert!((packet.damage_of_type(DamageType::Physical) - 50.0).abs() < 1.0);
@@ -416,8 +411,7 @@ mod tests {
         };
 
         let mut rng = make_test_rng();
-        let dot_registry = DotRegistry::new();
-        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &dot_registry, &mut rng);
+        let packet = calculate_damage(&attacker, &skill, "player".to_string(), &mut rng);
 
         assert!(packet.is_critical);
         // 100 * 1.5 (base crit multi) = 150
@@ -441,8 +435,7 @@ mod tests {
             ..Default::default()
         };
 
-        let dot_registry = DotRegistry::new();
-        let dps = calculate_skill_dps(&attacker, &skill, &dot_registry);
+        let dps = calculate_skill_dps(&attacker, &skill);
 
         // Base DPS: 100 damage * 1.0 speed = 100
         // With 5% crit at 1.5x: 100 * (1 + 0.05 * 0.5) = 102.5

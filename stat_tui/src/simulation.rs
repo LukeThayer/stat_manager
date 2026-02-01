@@ -3,7 +3,6 @@
 use stat_core::{
     combat::resolve_damage,
     damage::{calculate_damage, DamagePacketGenerator},
-    dot::DotRegistry,
     stat_block::StatBlock,
 };
 use rand::Rng;
@@ -23,7 +22,6 @@ impl DpsSimulation {
         attacker: &StatBlock,
         defender: &mut StatBlock,
         skill: &DamagePacketGenerator,
-        dot_registry: &DotRegistry,
         duration: f64,
         rng: &mut impl Rng,
     ) -> Self {
@@ -51,7 +49,6 @@ impl DpsSimulation {
                 attacker,
                 skill,
                 "simulator".to_string(),
-                dot_registry,
                 rng,
             );
 
@@ -61,7 +58,7 @@ impl DpsSimulation {
             }
 
             // Apply damage
-            let combat_result = resolve_damage(defender, &packet, dot_registry);
+            let combat_result = resolve_damage(defender, &packet);
             result.total_damage += combat_result.total_damage;
 
             // Check for kill
@@ -76,7 +73,7 @@ impl DpsSimulation {
 
         // Restore defender for repeated tests
         defender.current_life = initial_life;
-        defender.active_dots.clear();
+        defender.clear_effects();
 
         result
     }
@@ -126,14 +123,12 @@ mod tests {
         defender.current_life = 10000.0;
 
         let skill = DamagePacketGenerator::basic_attack();
-        let registry = DotRegistry::new();
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         let result = DpsSimulation::run(
             &attacker,
             &mut defender,
             &skill,
-            &registry,
             10.0,
             &mut rng,
         );

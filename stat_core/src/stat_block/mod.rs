@@ -9,7 +9,7 @@ pub use stat_value::StatValue;
 
 use crate::combat::CombatResult;
 use crate::damage::{calculate_damage, DamagePacket, DamagePacketGenerator};
-use crate::dot::{ActiveDoT, DotRegistry};
+use crate::dot::ActiveDoT;
 use crate::combat::resolve_damage;
 use crate::source::{BuffSource, GearSource, StatSource};
 use crate::types::{ActiveBuff, ActiveStatusEffect, AilmentStacking, Effect, EffectType, EquipmentSlot, TickResult};
@@ -495,14 +495,14 @@ impl StatBlock {
     // === Combat Methods ===
 
     /// Generate a damage packet for a skill attack (RNG handled internally)
-    pub fn attack(&self, skill: &DamagePacketGenerator, dot_registry: &DotRegistry) -> DamagePacket {
+    pub fn attack(&self, skill: &DamagePacketGenerator) -> DamagePacket {
         let mut rng = rand::thread_rng();
-        calculate_damage(self, skill, self.id.clone(), dot_registry, &mut rng)
+        calculate_damage(self, skill, self.id.clone(), &mut rng)
     }
 
     /// Receive damage from a damage packet, returning combat result
-    pub fn receive_damage(&mut self, packet: &DamagePacket, dot_registry: &DotRegistry) -> CombatResult {
-        resolve_damage(self, packet, dot_registry)
+    pub fn receive_damage(&mut self, packet: &DamagePacket) -> CombatResult {
+        resolve_damage(self, packet)
     }
 
     // === Unified Effect System Methods ===

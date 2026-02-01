@@ -3,10 +3,9 @@
 use super::result::{CombatResult, DamageTaken};
 use crate::damage::DamagePacket;
 use crate::defense::{apply_evasion_cap, calculate_armour_reduction, calculate_resistance_mitigation};
-use crate::dot::{apply_dot, ActiveDoT, DotRegistry};
 use crate::stat_block::StatBlock;
-use crate::types::ActiveStatusEffect;
-use loot_core::types::DamageType;
+use crate::types::Effect;
+use loot_core::types::{DamageType, StatusEffect};
 use rand::Rng;
 
 /// Resolve a damage packet against a defending stat block
@@ -16,22 +15,19 @@ use rand::Rng;
 /// 2. Applies armour to physical damage
 /// 3. Applies evasion one-shot protection
 /// 4. Applies damage to ES then life
-/// 5. Processes DoT applications
-/// 6. Processes status effect applications (chance = status_damage / max_health)
+/// 5. Processes status effect applications (chance = status_damage / max_health)
 pub fn resolve_damage(
     defender: &mut StatBlock,
     packet: &DamagePacket,
-    dot_registry: &DotRegistry,
 ) -> CombatResult {
     let mut rng = rand::thread_rng();
-    resolve_damage_with_rng(defender, packet, dot_registry, &mut rng)
+    resolve_damage_with_rng(defender, packet, &mut rng)
 }
 
 /// Resolve damage with a provided RNG (for deterministic testing)
 pub fn resolve_damage_with_rng(
     defender: &mut StatBlock,
     packet: &DamagePacket,
-    dot_registry: &DotRegistry,
     rng: &mut impl Rng,
 ) -> CombatResult {
     let mut result = CombatResult::new();
@@ -136,65 +132,89 @@ pub fn resolve_damage_with_rng(
     result.es_after = defender.current_energy_shield;
     result.life_after = defender.current_life;
 
-    // Step 5: Process DoT applications
-    for pending_dot in &packet.dots_to_apply {
-        if let Some(config) = dot_registry.get(&pending_dot.dot_type) {
-            let active = ActiveDoT::new(
-                pending_dot.dot_type.clone(),
-                packet.source_id.clone(),
-                config.damage_type,
-                pending_dot.damage_per_second * config.tick_rate, // Convert DPS to damage per tick
-                config.tick_rate,
-                pending_dot.duration,
-            );
-
-            apply_dot(&mut defender.active_dots, active.clone(), config);
-            result.dots_applied.push(active);
-        }
-    }
-
-    // Step 6: Process status effect applications
+    // Step 5: Process status effect applications using unified Effect system
     // Chance to apply = status_damage / target_max_health
     let target_max_health = defender.computed_max_life();
     for pending_status in &packet.status_effects_to_apply {
         let apply_chance = pending_status.calculate_apply_chance(target_max_health);
 
         if rng.gen::<f64>() < apply_chance {
-            // Check if this status effect already exists
-            let existing = defender
-                .active_status_effects
-                .iter_mut()
-                .find(|e| e.effect_type == pending_status.effect_type);
+            // Create unified Effect based on status type
+            let effect = create_effect_from_status(
+                pending_status.effect_type,
+                pending_status.duration,
+                pending_status.magnitude,
+                pending_status.dot_dps,
+                &packet.source_id,
+            );
 
-            if let Some(existing_effect) = existing {
-                // Refresh duration and potentially add stacks
-                existing_effect.refresh(pending_status.duration, pending_status.dot_dps);
-                let max_stacks = defender
-                    .status_effect_stats
-                    .get_stats(pending_status.effect_type)
-                    .max_stacks
-                    .max(1) as u32;
-                existing_effect.add_stack(max_stacks);
-                // Update magnitude if new application is stronger
-                if pending_status.magnitude > existing_effect.magnitude {
-                    existing_effect.magnitude = pending_status.magnitude;
-                }
-            } else {
-                // Apply new status effect with DoT damage
-                let active = ActiveStatusEffect::new_with_dot(
-                    pending_status.effect_type,
-                    pending_status.duration,
-                    pending_status.magnitude,
-                    pending_status.dot_dps,
-                    packet.source_id.clone(),
-                );
-                defender.active_status_effects.push(active.clone());
-                result.status_effects_applied.push(active);
-            }
+            // Add to unified effects (handles stacking internally)
+            defender.add_effect(effect.clone());
+            result.effects_applied.push(effect);
         }
     }
 
     result
+}
+
+/// Create an Effect from a pending status effect
+fn create_effect_from_status(
+    status: StatusEffect,
+    duration: f64,
+    magnitude: f64,
+    dot_dps: f64,
+    source_id: &str,
+) -> Effect {
+    match status {
+        StatusEffect::Poison => {
+            let mut e = Effect::poison(dot_dps, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Bleed => {
+            let mut e = Effect::bleed(dot_dps, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Burn => {
+            let mut e = Effect::burn(dot_dps, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Freeze => {
+            let mut e = Effect::freeze(magnitude, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Chill => {
+            let mut e = Effect::chill(magnitude, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Static => {
+            let mut e = Effect::shock(magnitude, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Fear => {
+            let mut e = Effect::fear(magnitude, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+        StatusEffect::Slow => {
+            let mut e = Effect::slow(magnitude, source_id);
+            e.duration_remaining = duration;
+            e.total_duration = duration;
+            e
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,9 +236,8 @@ mod tests {
         defender.current_life = 100.0;
 
         let packet = make_test_packet(vec![(DamageType::Physical, 50.0)]);
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // Should take some damage (reduced by armour if any)
         assert!(result.total_damage > 0.0);
@@ -232,9 +251,8 @@ mod tests {
         defender.fire_resistance.base = 50.0; // 50% fire resist
 
         let packet = make_test_packet(vec![(DamageType::Fire, 100.0)]);
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // Should take 50 damage after 50% resist
         assert!((result.total_damage - 50.0).abs() < 1.0);
@@ -248,9 +266,8 @@ mod tests {
         defender.armour.base = 1000.0;
 
         let packet = make_test_packet(vec![(DamageType::Physical, 100.0)]);
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // Armour should reduce physical damage
         assert!(result.damage_reduced_by_armour > 0.0);
@@ -267,9 +284,8 @@ mod tests {
         // Hit for 1500 fire damage with 2000 accuracy
         let mut packet = make_test_packet(vec![(DamageType::Fire, 1500.0)]);
         packet.accuracy = 2000.0;
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // Should cap at 1000 (1500 - 1000 = 500 evaded)
         assert!(result.triggered_evasion_cap);
@@ -285,9 +301,8 @@ mod tests {
         defender.max_energy_shield = 50.0;
 
         let packet = make_test_packet(vec![(DamageType::Fire, 75.0)]);
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // ES should absorb first 50, life takes remaining 25
         assert!((result.damage_blocked_by_es - 50.0).abs() < 1.0);
@@ -301,9 +316,8 @@ mod tests {
         defender.current_life = 50.0;
 
         let packet = make_test_packet(vec![(DamageType::Fire, 1000.0)]);
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         assert!(result.is_killing_blow);
         assert!(!defender.is_alive());
@@ -319,8 +333,7 @@ mod tests {
         let mut packet = make_test_packet(vec![(DamageType::Fire, 100.0)]);
         packet.fire_pen = 25.0; // 25% penetration
 
-        let registry = DotRegistry::new();
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // 75% resist - 25% pen = 50% effective resist
         // 100 * (1 - 0.5) = 50 damage
@@ -338,9 +351,8 @@ mod tests {
             (DamageType::Fire, 100.0),   // 50 after resist
             (DamageType::Cold, 100.0),   // 75 after resist
         ]);
-        let registry = DotRegistry::new();
 
-        let result = resolve_damage(&mut defender, &packet, &registry);
+        let result = resolve_damage(&mut defender, &packet);
 
         // Total: 50 + 75 = 125
         assert!((result.total_damage - 125.0).abs() < 1.0);
