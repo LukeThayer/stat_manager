@@ -1,0 +1,57 @@
+# Accessory Base Types
+
+[[base_types]]
+id = "gold_ring"
+name = "Gold Ring"
+class = "ring"
+tags = ["accessory", "jewelry"]
+
+[base_types.implicit]
+stat = "increased_item_rarity"
+min = 5
+max = 15
+
+[base_types.requirements]
+level = 1
+
+[[base_types]]
+id = "iron_ring"
+name = "Iron Ring"
+class = "ring"
+tags = ["accessory", "jewelry", "physical"]
+
+[base_types.implicit]
+stat = "added_physical_damage"
+min = 1
+max = 4
+
+[base_types.requirements]
+level = 1
+
+[[base_types]]
+id = "gold_amulet"
+name = "Gold Amulet"
+class = "amulet"
+tags = ["accessory", "jewelry"]
+
+[base_types.implicit]
+stat = "increased_item_rarity"
+min = 10
+max = 20
+
+[base_types.requirements]
+level = 1
+
+[[base_types]]
+id = "leather_belt"
+name = "Leather Belt"
+class = "belt"
+tags = ["accessory"]
+
+[base_types.implicit]
+stat = "added_life"
+min = 20
+max = 30
+
+[base_types.requirements]
+level = 1

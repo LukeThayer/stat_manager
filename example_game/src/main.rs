@@ -52,11 +52,14 @@ struct GameState {
     player_equipment: HashMap<EquipmentSlot, Item>,
     inventory: Vec<Item>,
     currency: HashMap<String, u32>,
+    skills: Vec<DamagePacketGenerator>,
+    selected_skill: usize,
 
     // Enemy
     enemy: StatBlock,
     enemy_equipment: HashMap<EquipmentSlot, Item>,
     enemy_max_hp: f64,
+    enemy_skill: DamagePacketGenerator,
 
     // Game
     time: f64,
@@ -72,6 +75,71 @@ struct GameState {
     generator: Generator,
     dot_registry: DotRegistry,
     rng: ChaCha8Rng,
+}
+
+/// Create the 4 player skills
+fn create_skills() -> Vec<DamagePacketGenerator> {
+    use stat_core::damage::BaseDamage;
+    use stat_core::types::SkillTag;
+
+    vec![
+        // 1. Basic Attack - simple weapon attack
+        DamagePacketGenerator {
+            id: "basic_attack".to_string(),
+            name: "Basic Attack".to_string(),
+            base_damages: vec![],
+            weapon_effectiveness: 1.0,
+            damage_effectiveness: 1.0,
+            attack_speed_modifier: 1.0,
+            base_crit_chance: 0.0,
+            crit_multiplier_bonus: 0.0,
+            tags: vec![SkillTag::Attack, SkillTag::Melee],
+            hits_per_attack: 1,
+            ..Default::default()
+        },
+        // 2. Heavy Strike - 150% damage, 20% slower
+        DamagePacketGenerator {
+            id: "heavy_strike".to_string(),
+            name: "Heavy Strike".to_string(),
+            base_damages: vec![],
+            weapon_effectiveness: 1.5,
+            damage_effectiveness: 1.0,
+            attack_speed_modifier: 0.8,
+            base_crit_chance: 0.0,
+            crit_multiplier_bonus: 0.0,
+            tags: vec![SkillTag::Attack, SkillTag::Melee],
+            hits_per_attack: 1,
+            ..Default::default()
+        },
+        // 3. Double Strike - hits twice at 70% damage each
+        DamagePacketGenerator {
+            id: "double_strike".to_string(),
+            name: "Double Strike".to_string(),
+            base_damages: vec![],
+            weapon_effectiveness: 0.7,
+            damage_effectiveness: 1.0,
+            attack_speed_modifier: 0.9,
+            base_crit_chance: 0.0,
+            crit_multiplier_bonus: 0.0,
+            tags: vec![SkillTag::Attack, SkillTag::Melee],
+            hits_per_attack: 2,
+            ..Default::default()
+        },
+        // 4. Elemental Strike - adds flat fire damage, +50% crit multiplier
+        DamagePacketGenerator {
+            id: "elemental_strike".to_string(),
+            name: "Elemental Strike".to_string(),
+            base_damages: vec![BaseDamage::new(DamageType::Fire, 10.0, 20.0)],
+            weapon_effectiveness: 1.0,
+            damage_effectiveness: 1.0,
+            attack_speed_modifier: 1.0,
+            base_crit_chance: 5.0,
+            crit_multiplier_bonus: 0.5,
+            tags: vec![SkillTag::Attack, SkillTag::Melee, SkillTag::Fire],
+            hits_per_attack: 1,
+            ..Default::default()
+        },
+    ]
 }
 
 impl GameState {
@@ -103,30 +171,37 @@ impl GameState {
     }
 
     fn new() -> Self {
-        // Try to load config from loot_generator
-        let config_paths = [
-            "../loot_generator/config",
-            "../../loot_generator/config",
-            "loot_generator/config",
-        ];
+        // Load config from example_game's config directory
+        let config_paths = ["example_game/config", "../example_game/config"];
 
-        let mut config_loaded = false;
-        let config = config_paths
+        let (config, config_path) = config_paths
             .iter()
             .find_map(|p| {
                 let path = Path::new(p);
                 if path.exists() {
-                    if let Ok(cfg) = Config::load_from_dir(path) {
-                        config_loaded = true;
-                        Some(cfg)
-                    } else {
-                        None
+                    match Config::load_from_dir(path) {
+                        Ok(cfg) => Some((cfg, p.to_string())),
+                        Err(e) => {
+                            eprintln!("Error loading config from '{}': {}", p, e);
+                            None
+                        }
                     }
                 } else {
                     None
                 }
             })
-            .unwrap_or_else(Config::default);
+            .unwrap_or_else(|| {
+                eprintln!("ERROR: Could not find config directory.");
+                eprintln!("Looked in:");
+                for p in &config_paths {
+                    eprintln!("  - {}", p);
+                }
+                eprintln!();
+                eprintln!("Make sure you run the game from the stat_manager directory:");
+                eprintln!("  cd /path/to/stat_manager");
+                eprintln!("  cargo run -p example_game");
+                std::process::exit(1);
+            });
 
         let generator = Generator::new(config);
         let mut rng = ChaCha8Rng::seed_from_u64(42);
@@ -160,20 +235,20 @@ impl GameState {
         let enemy = StatBlock::new();
         let enemy_equipment = HashMap::new();
 
-        let welcome_msg = if config_loaded {
-            "Welcome! Press SPACE to attack. Config loaded.".to_string()
-        } else {
-            "Welcome! Press SPACE to attack. (No config - using fallback)".to_string()
-        };
+        let welcome_msg = format!("Welcome! Config: {}", config_path);
+        let skills = create_skills();
 
         let mut state = GameState {
             player,
             player_equipment,
             inventory,
             currency: HashMap::new(),
+            skills,
+            selected_skill: 0,
             enemy,
             enemy_equipment,
             enemy_max_hp: 100.0,
+            enemy_skill: DamagePacketGenerator::basic_attack(),
             time: 0.0,
             kills: 0,
             messages: vec![welcome_msg],
@@ -234,6 +309,10 @@ impl GameState {
         self.enemy_max_hp = enemy.computed_max_life();
         self.enemy = enemy;
         self.enemy_equipment = enemy_equipment;
+
+        // Assign a random skill to the enemy
+        let skill_idx = self.rng.gen_range(0..self.skills.len());
+        self.enemy_skill = self.skills[skill_idx].clone();
     }
 
     fn attack(&mut self) {
@@ -242,10 +321,10 @@ impl GameState {
             return;
         }
 
-        let skill = DamagePacketGenerator::basic_attack();
+        let skill = &self.skills[self.selected_skill];
         let packet = calculate_damage(
             &self.player,
-            &skill,
+            skill,
             "player".to_string(),
             &self.dot_registry,
             &mut self.rng,
@@ -253,15 +332,21 @@ impl GameState {
 
         let result = resolve_damage(&mut self.enemy, &packet, &self.dot_registry);
 
-        // Advance time by attack interval
+        // Advance time by attack interval (modified by skill)
         let attack_speed = self.player.attack_speed.compute() * self.player.weapon_attack_speed;
-        self.time += 1.0 / attack_speed.max(0.1);
+        let effective_speed = attack_speed * skill.attack_speed_modifier;
+        self.time += 1.0 / effective_speed.max(0.1);
 
         // Log the attack
         let crit_str = if packet.is_critical { " CRIT!" } else { "" };
+        let hits_str = if skill.hits_per_attack > 1 {
+            format!(" ({}x)", skill.hits_per_attack)
+        } else {
+            String::new()
+        };
         self.messages.push(format!(
-            "Hit for {:.0} damage{}",
-            result.total_damage, crit_str
+            "{}: {:.0} damage{}{}",
+            skill.name, result.total_damage, hits_str, crit_str
         ));
 
         // Check for kill
@@ -387,8 +472,8 @@ impl GameState {
     }
 
     fn calculate_dps(&self) -> f64 {
-        let skill = DamagePacketGenerator::basic_attack();
-        calculate_skill_dps(&self.player, &skill, &self.dot_registry)
+        let skill = &self.skills[self.selected_skill];
+        calculate_skill_dps(&self.player, skill, &self.dot_registry)
     }
 }
 
@@ -430,6 +515,7 @@ fn draw_combat(f: &mut Frame, state: &GameState) {
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Min(10),   // Main content
+            Constraint::Length(4), // Skills
             Constraint::Length(5), // Messages
             Constraint::Length(3), // Controls
         ])
@@ -501,10 +587,45 @@ fn draw_combat(f: &mut Frame, state: &GameState) {
             hp_bar, enemy_hp, enemy_max_hp
         )),
         Line::from(format!("Weapon: {}", enemy_weapon)),
+        Line::from(format!("Skill: {}", state.enemy_skill.name)),
     ];
     let enemy_widget =
         Paragraph::new(enemy_text).block(Block::default().borders(Borders::ALL).title("Enemy"));
     f.render_widget(enemy_widget, main_chunks[1]);
+
+    // Skills
+    let skill_spans: Vec<Span> = state
+        .skills
+        .iter()
+        .enumerate()
+        .flat_map(|(i, skill)| {
+            let key = format!("[{}] ", i + 1);
+            let style = if i == state.selected_skill {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            vec![
+                Span::styled(key, style),
+                Span::styled(skill.name.clone(), style),
+                Span::raw("    "),
+            ]
+        })
+        .collect();
+    let skills_line = Line::from(skill_spans);
+    let selected_skill = &state.skills[state.selected_skill];
+    let skill_desc = match state.selected_skill {
+        0 => "100% weapon damage",
+        1 => "150% damage, 20% slower",
+        2 => "70% damage x2 hits",
+        3 => "+10-20 fire, +5% crit, +50% crit multi",
+        _ => "",
+    };
+    let skills_widget = Paragraph::new(vec![skills_line, Line::from(format!("{}: {}", selected_skill.name, skill_desc))])
+        .block(Block::default().borders(Borders::ALL).title("Skills (1-4 to select)"));
+    f.render_widget(skills_widget, chunks[2]);
 
     // Messages
     let messages: Vec<ListItem> = state
@@ -514,13 +635,13 @@ fn draw_combat(f: &mut Frame, state: &GameState) {
         .collect();
     let messages_widget =
         List::new(messages).block(Block::default().borders(Borders::ALL).title("Combat Log"));
-    f.render_widget(messages_widget, chunks[2]);
+    f.render_widget(messages_widget, chunks[3]);
 
     // Controls
     let controls = Paragraph::new("[SPACE] Attack    [I] Inventory    [E] Equipment    [Q] Quit")
         .style(Style::default().fg(Color::Yellow))
         .block(Block::default().borders(Borders::ALL));
-    f.render_widget(controls, chunks[3]);
+    f.render_widget(controls, chunks[4]);
 }
 
 fn draw_inventory(f: &mut Frame, state: &GameState) {
@@ -817,6 +938,10 @@ fn main() -> io::Result<()> {
                     Screen::Combat => match key.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char(' ') => state.attack(),
+                        KeyCode::Char('1') => state.selected_skill = 0,
+                        KeyCode::Char('2') => state.selected_skill = 1,
+                        KeyCode::Char('3') => state.selected_skill = 2,
+                        KeyCode::Char('4') => state.selected_skill = 3,
                         KeyCode::Char('i') => {
                             state.screen = Screen::Inventory;
                             state.selected_index = 0;

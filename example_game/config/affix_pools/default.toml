@@ -1,0 +1,30 @@
+# Default Affix Pool - contains all common affixes
+
+[[pools]]
+id = "common"
+name = "Common Affixes"
+description = "Standard affix pool for most crafting"
+affixes = [
+    # Weapon prefixes
+    "added_phys_damage",
+    "increased_phys_damage",
+    "added_fire_damage",
+    "added_cold_damage",
+    "added_lightning_damage",
+    # Weapon suffixes
+    "attack_speed",
+    "crit_chance",
+    "crit_damage",
+    "accuracy",
+    # Armour prefixes
+    "added_life",
+    "added_armour",
+    "added_evasion",
+    "increased_armour",
+    # Armour suffixes
+    "fire_res",
+    "cold_res",
+    "lightning_res",
+    "life_regen",
+    "movement_speed",
+]
