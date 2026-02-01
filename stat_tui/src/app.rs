@@ -742,7 +742,31 @@ impl App {
     pub fn tick_time(&mut self, seconds: f64) {
         self.time_elapsed += seconds;
 
-        // Process DoT ticks
+        // Process unified effects using the new immutable API
+        if !self.enemy.effects.is_empty() {
+            let (new_enemy, result) = self.enemy.tick_effects(seconds);
+            self.enemy = new_enemy;
+
+            if result.dot_damage > 0.0 {
+                self.combat_log.push(format!(
+                    "[{:.1}s] Effects deal {:.0} damage ({:.0} HP remaining)",
+                    self.time_elapsed, result.dot_damage, result.life_remaining
+                ));
+
+                if result.is_dead {
+                    self.combat_log.push("  → ENEMY DEFEATED by effects!".to_string());
+                }
+            }
+
+            for expired_id in &result.expired_effects {
+                self.combat_log.push(format!(
+                    "[{:.1}s] {} expired",
+                    self.time_elapsed, expired_id
+                ));
+            }
+        }
+
+        // === Legacy: Process DoT ticks (for backward compatibility) ===
         if !self.enemy.active_dots.is_empty() {
             let mut configs = std::collections::HashMap::new();
             for dot_type in ["ignite", "poison", "bleed"] {
@@ -777,7 +801,7 @@ impl App {
             }
         }
 
-        // Process status effect ticks
+        // === Legacy: Process status effect ticks (for backward compatibility) ===
         if !self.enemy.active_status_effects.is_empty() {
             let mut total_status_damage = 0.0;
             let mut damage_by_type: Vec<(StatusEffect, f64)> = Vec::new();
@@ -839,6 +863,9 @@ impl App {
 
     pub fn reset(&mut self) {
         self.enemy.current_life = self.enemy.computed_max_life();
+        // Clear unified effects
+        self.enemy.clear_effects();
+        // Clear legacy effects (for backward compatibility)
         self.enemy.active_dots.clear();
         self.enemy.active_status_effects.clear();
         self.combat_log.clear();

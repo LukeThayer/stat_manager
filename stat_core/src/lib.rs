@@ -47,7 +47,7 @@ pub use damage::{
 pub use dot::{ActiveDoT, DotConfig, DotStacking};
 pub use source::{BaseStatsSource, BuffSource, GearSource, SkillTreeSource, StatSource};
 pub use stat_block::{StatAccumulator, StatBlock, StatValue, StatusConversions, StatusEffectStats, StatusEffectData};
-pub use types::{ActiveBuff, ActiveStatusEffect, EquipmentSlot, SkillNodeId, SkillTag};
+pub use types::{ActiveBuff, ActiveStatusEffect, AilmentStacking, Effect, EffectType, EquipmentSlot, SkillNodeId, SkillTag, StatMod, TickResult};
 pub use config::default_skills;
 
 // Re-export loot_core types for convenience

@@ -20,6 +20,10 @@ A comprehensive game mechanics library for stat management, damage calculation, 
 - [Damage Calculation](#damage-calculation)
   - [Calculation Flow](#calculation-flow)
   - [Formulas](#formulas)
+- [Unified Effect System](#unified-effect-system)
+  - [Effect Types](#effect-types)
+  - [Immutable API](#immutable-api)
+  - [Effect Stacking](#effect-stacking)
 - [Status Effects & DoTs](#status-effects--dots)
   - [Status Effects](#status-effects)
   - [DoT System](#dot-system)
@@ -35,6 +39,7 @@ A comprehensive game mechanics library for stat management, damage calculation, 
 `stat_core` provides:
 
 - **StatBlock**: Aggregated character statistics from multiple sources (gear, buffs, skill tree, etc.)
+- **Unified Effect System**: Single `Effect` type for buffs, debuffs, and ailments with immutable API
 - **DamagePacketGenerator**: Configurable skill/ability definitions
 - **DamagePacket**: Calculated damage output with type breakdown, crits, penetration, and pending status effects
 - **DoT System**: Damage-over-time with configurable stacking rules
@@ -103,9 +108,9 @@ fn main() {
 stat_core/
 ├── src/
 │   ├── lib.rs           # Public API exports
-│   ├── types.rs         # Core enums (EquipmentSlot, SkillTag, etc.)
+│   ├── types.rs         # Core types: Effect, EffectType, StatMod, AilmentStacking, TickResult
 │   ├── stat_block/      # Character stat aggregation
-│   │   ├── mod.rs       # StatBlock definition
+│   │   ├── mod.rs       # StatBlock definition + unified effect methods
 │   │   ├── stat_value.rs    # Triple-modifier StatValue
 │   │   ├── computed.rs      # Computed stat helpers
 │   │   └── aggregator.rs    # StatAccumulator for building stats
@@ -118,10 +123,10 @@ stat_core/
 │   │   ├── armour.rs
 │   │   ├── evasion.rs
 │   │   └── resistance.rs
-│   ├── dot/             # Damage-over-Time system
+│   ├── dot/             # Damage-over-Time system (legacy)
 │   │   ├── mod.rs       # DotRegistry
 │   │   ├── types.rs     # DotConfig, DotStacking
-│   │   ├── active.rs    # ActiveDoT
+│   │   ├── active.rs    # ActiveDoT (legacy)
 │   │   └── tick.rs      # DoT tick processing
 │   ├── combat/          # Combat resolution
 │   │   ├── resolution.rs
@@ -129,7 +134,7 @@ stat_core/
 │   ├── source/          # Stat providers
 │   │   ├── base_stats.rs
 │   │   ├── gear.rs
-│   │   ├── buff.rs
+│   │   ├── buff.rs      # BuffSource (legacy)
 │   │   └── skill_tree.rs
 │   └── config/          # Configuration loading
 │       ├── skills.rs
@@ -238,10 +243,13 @@ pub struct StatBlock {
     pub weapon_attack_speed: f64,
     pub weapon_crit_chance: f64,
 
-    // === Active Effects ===
-    pub active_dots: Vec<ActiveDoT>,
-    pub active_buffs: Vec<ActiveBuff>,
-    pub active_status_effects: Vec<ActiveStatusEffect>,
+    // === Active Effects (Unified) ===
+    pub effects: Vec<Effect>,        // Unified effect system (preferred)
+
+    // === Legacy Active Effects ===
+    pub active_dots: Vec<ActiveDoT>,              // Legacy DoT tracking
+    pub active_buffs: Vec<ActiveBuff>,            // Legacy buff tracking
+    pub active_status_effects: Vec<ActiveStatusEffect>, // Legacy status effects
 
     // === Status Effect Configuration ===
     pub status_effect_stats: StatusEffectData,
@@ -524,6 +532,144 @@ DoT DPS = BaseDotPercent × StatusDamage × (1 + DotIncreased%)
 
 ---
 
+## Unified Effect System
+
+The unified effect system replaces the separate `ActiveBuff`, `ActiveStatusEffect`, and `ActiveDoT` types with a single `Effect` type that can represent any temporary effect on an entity.
+
+### Effect Types
+
+```rust
+pub struct Effect {
+    pub id: String,              // Unique identifier
+    pub name: String,            // Display name
+    pub effect_type: EffectType, // StatModifier or Ailment
+    pub duration_remaining: f64, // Time remaining (seconds)
+    pub total_duration: f64,     // Total duration (for % calculations)
+    pub stacks: u32,             // Current stack count
+    pub max_stacks: u32,         // Maximum allowed stacks
+    pub source_id: String,       // Source entity ID
+}
+
+pub enum EffectType {
+    /// Stat modifier effect (buff or debuff)
+    StatModifier {
+        modifiers: Vec<StatMod>,
+        is_debuff: bool,
+    },
+    /// Ailment effect (status effect like poison, bleed, etc.)
+    Ailment {
+        status: StatusEffect,
+        magnitude: f64,        // Effect strength (e.g., slow %)
+        dot_dps: f64,          // Damage per second
+        tick_rate: f64,        // Time between ticks
+        time_until_tick: f64,  // Time until next tick
+        stacking: AilmentStacking,
+        effectiveness: f64,    // Multiplier for stacking
+    },
+}
+
+pub struct StatMod {
+    pub stat: StatType,
+    pub value_per_stack: f64,
+    pub is_more: bool,  // "more" vs "increased" modifier
+}
+
+pub enum AilmentStacking {
+    StrongestOnly,           // Only strongest instance deals damage
+    Unlimited,               // All instances stack independently
+    Limited {
+        stack_effectiveness: f64,  // Effectiveness of additional stacks
+    },
+}
+```
+
+### Immutable API
+
+The unified effect system uses an immutable API pattern for clean state management:
+
+```rust
+// Add an effect (immutable - returns new StatBlock)
+let new_block = entity.with_effect(effect);
+
+// Or mutably
+entity.add_effect(effect);
+
+// Tick all effects (immutable - returns new StatBlock and result)
+let (new_entity, tick_result) = entity.tick_effects(delta_time);
+
+// TickResult contains:
+// - dot_damage: f64          - Total DoT damage dealt
+// - expired_effects: Vec<String> - IDs of effects that expired
+// - stat_effects_expired: bool   - Whether stat modifiers expired (triggers rebuild)
+// - life_remaining: f64      - Life after DoT damage
+// - is_dead: bool            - Whether entity died from DoT
+```
+
+**Example Usage:**
+
+```rust
+use stat_core::{Effect, AilmentStacking, StatusEffect};
+
+// Create a poison ailment
+let poison = Effect::new_ailment(
+    "poison_1",
+    "Poison",
+    StatusEffect::Poison,
+    5.0,   // duration
+    0.0,   // magnitude (not used for poison)
+    50.0,  // dot_dps
+    0.33,  // tick_rate
+    AilmentStacking::Unlimited,
+    "player",
+);
+
+// Add to entity
+let mut enemy = StatBlock::new();
+enemy.add_effect(poison);
+
+// Tick effects over time
+let (enemy, result) = enemy.tick_effects(1.0);
+println!("DoT dealt {} damage", result.dot_damage);
+println!("Enemy HP: {}", result.life_remaining);
+```
+
+### Effect Stacking
+
+| Stacking Mode | Behavior | Used By |
+|---------------|----------|---------|
+| `StrongestOnly` | Only strongest instance applies, weaker refresh duration | Burn, Freeze, Chill, Fear, Slow |
+| `Unlimited` | All instances stack independently | Poison |
+| `Limited` | Stacks up to max, additional at reduced effectiveness | Bleed, Static |
+
+**Creating stat modifier effects:**
+
+```rust
+use stat_core::{Effect, StatMod};
+use loot_core::types::StatType;
+
+let damage_buff = Effect::new_stat_modifier(
+    "berserk",
+    "Berserk",
+    10.0,  // duration
+    false, // is_debuff
+    vec![
+        StatMod {
+            stat: StatType::IncreasedPhysicalDamage,
+            value_per_stack: 20.0,  // 20% per stack
+            is_more: false,
+        },
+        StatMod {
+            stat: StatType::IncreasedAttackSpeed,
+            value_per_stack: 10.0,  // 10% per stack
+            is_more: false,
+        },
+    ],
+    "player",
+);
+```
+
+---
+
 ## Status Effects & DoTs
 
 ### Status Effects
@@ -744,6 +890,83 @@ gear.apply(&mut accumulator);
 // Build final stat block
 let mut player = StatBlock::new();
 accumulator.apply_to(&mut player);
+```
+
+### Example 5: Using the Unified Effect System
+
+```rust
+use stat_core::{StatBlock, Effect, AilmentStacking, StatusEffect};
+
+// Create an enemy
+let mut enemy = StatBlock::new();
+enemy.max_life.base = 500.0;
+enemy.current_life = 500.0;
+
+// Apply a poison ailment
+let poison = Effect::new_ailment(
+    "poison_from_viper_strike",
+    "Poison",
+    StatusEffect::Poison,
+    5.0,   // 5 second duration
+    0.0,   // magnitude (not used for DoT)
+    30.0,  // 30 DPS
+    0.33,  // tick every 0.33s
+    AilmentStacking::Unlimited,
+    "player",
+);
+enemy.add_effect(poison);
+
+// Simulate 2 seconds of time passing
+let (enemy, result) = enemy.tick_effects(2.0);
+
+println!("DoT damage dealt: {:.1}", result.dot_damage);
+println!("Enemy HP: {:.1}/{:.1}", result.life_remaining, enemy.computed_max_life());
+
+// Check active effects
+for effect in enemy.active_effects() {
+    println!("{}: {:.1}s remaining, {:.1} DPS",
+        effect.name,
+        effect.duration_remaining,
+        effect.dps()
+    );
+}
+```
+
+### Example 6: Applying Buffs with the Effect System
+
+```rust
+use stat_core::{StatBlock, Effect, StatMod};
+use loot_core::types::StatType;
+
+let mut player = StatBlock::new();
+
+// Create a "Rage" buff that increases damage and attack speed
+let rage = Effect::new_stat_modifier(
+    "rage_buff",
+    "Rage",
+    8.0,   // 8 second duration
+    false, // not a debuff
+    vec![
+        StatMod {
+            stat: StatType::IncreasedPhysicalDamage,
+            value_per_stack: 25.0,  // 25% increased physical damage
+            is_more: false,
+        },
+        StatMod {
+            stat: StatType::IncreasedAttackSpeed,
+            value_per_stack: 15.0,  // 15% increased attack speed
+            is_more: false,
+        },
+    ],
+    "self",
+);
+
+// Add the buff (immutable pattern)
+let player = player.with_effect(rage);
+
+// The effect is now tracked
+assert_eq!(player.active_effects().len(), 1);
+assert!(!player.active_effects()[0].is_damaging());
 ```
 
 ---

@@ -6,7 +6,7 @@
 
 // Core types
 pub use crate::stat_block::{StatBlock, StatValue};
-pub use crate::types::{ActiveBuff, ActiveStatusEffect, EquipmentSlot, SkillTag};
+pub use crate::types::{ActiveBuff, ActiveStatusEffect, AilmentStacking, Effect, EffectType, EquipmentSlot, SkillTag, StatMod, TickResult};
 
 // Damage system
 pub use crate::damage::{DamagePacket, DamagePacketGenerator, BaseDamage};

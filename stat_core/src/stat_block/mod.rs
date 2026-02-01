@@ -12,7 +12,7 @@ use crate::damage::{calculate_damage, DamagePacket, DamagePacketGenerator};
 use crate::dot::{ActiveDoT, DotRegistry};
 use crate::combat::resolve_damage;
 use crate::source::{BuffSource, GearSource, StatSource};
-use crate::types::{ActiveBuff, ActiveStatusEffect, EquipmentSlot};
+use crate::types::{ActiveBuff, ActiveStatusEffect, AilmentStacking, Effect, EffectType, EquipmentSlot, TickResult};
 use loot_core::types::{DamageType, StatusEffect};
 use loot_core::Item;
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,12 @@ pub struct StatBlock {
     pub item_rarity_increased: f64,
     pub item_quantity_increased: f64,
 
-    // === Active Effects ===
+    // === Active Effects (Unified) ===
+    /// Unified effects list (replaces active_dots, active_buffs, active_status_effects)
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+
+    // === Legacy Active Effects (kept for backwards compatibility during transition) ===
     #[serde(default)]
     pub active_dots: Vec<ActiveDoT>,
     #[serde(default)]
@@ -291,7 +296,10 @@ impl StatBlock {
             item_rarity_increased: 0.0,
             item_quantity_increased: 0.0,
 
-            // Active effects
+            // Active effects (unified)
+            effects: Vec::new(),
+
+            // Legacy active effects
             active_dots: Vec::new(),
             active_buffs: Vec::new(),
             active_status_effects: Vec::new(),
@@ -495,5 +503,141 @@ impl StatBlock {
     /// Receive damage from a damage packet, returning combat result
     pub fn receive_damage(&mut self, packet: &DamagePacket, dot_registry: &DotRegistry) -> CombatResult {
         resolve_damage(self, packet, dot_registry)
+    }
+
+    // === Unified Effect System Methods ===
+
+    /// Add an effect to this entity (immutable pattern)
+    pub fn with_effect(&self, effect: Effect) -> StatBlock {
+        let mut new_block = self.clone();
+        new_block.add_effect(effect);
+        new_block
+    }
+
+    /// Add an effect to this entity (mutable)
+    pub fn add_effect(&mut self, effect: Effect) {
+        // Handle stacking logic for ailments
+        if let EffectType::Ailment { status, stacking, .. } = &effect.effect_type {
+            let existing = self.effects.iter_mut().find(|e| {
+                if let EffectType::Ailment { status: existing_status, .. } = &e.effect_type {
+                    existing_status == status
+                } else {
+                    false
+                }
+            });
+
+            if let Some(existing_effect) = existing {
+                match stacking {
+                    AilmentStacking::StrongestOnly => {
+                        // Only keep if new is stronger, otherwise just refresh
+                        if effect.dps() >= existing_effect.dps() {
+                            existing_effect.refresh(effect.duration_remaining);
+                            // Update dps if higher
+                            if let EffectType::Ailment { dot_dps: existing_dps, .. } = &mut existing_effect.effect_type {
+                                if let EffectType::Ailment { dot_dps: new_dps, .. } = &effect.effect_type {
+                                    if *new_dps > *existing_dps {
+                                        *existing_dps = *new_dps;
+                                    }
+                                }
+                            }
+                        }
+                        return; // Don't add new effect
+                    }
+                    AilmentStacking::Limited { .. } => {
+                        // Add stack to existing, refresh duration
+                        existing_effect.add_stack();
+                        existing_effect.refresh(effect.duration_remaining);
+                        return; // Don't add new effect
+                    }
+                    AilmentStacking::Unlimited => {
+                        // Just add as new effect (fall through)
+                    }
+                }
+            }
+        }
+
+        // Check for stat modifier with same ID
+        if let EffectType::StatModifier { .. } = &effect.effect_type {
+            let existing = self.effects.iter_mut().find(|e| e.id == effect.id);
+            if let Some(existing_effect) = existing {
+                existing_effect.add_stack();
+                existing_effect.refresh(effect.duration_remaining);
+                return;
+            }
+        }
+
+        self.effects.push(effect);
+    }
+
+    /// Tick all effects by delta time (immutable pattern)
+    /// Returns a new StatBlock and the tick result
+    pub fn tick_effects(&self, delta: f64) -> (StatBlock, TickResult) {
+        let mut new_block = self.clone();
+        let mut result = TickResult::default();
+
+        // Process all effects
+        for effect in &mut new_block.effects {
+            let damage = effect.tick(delta);
+            if damage > 0.0 {
+                result.dot_damage += damage;
+            }
+        }
+
+        // Apply DoT damage
+        if result.dot_damage > 0.0 {
+            new_block.current_life -= result.dot_damage;
+            if new_block.current_life <= 0.0 {
+                new_block.current_life = 0.0;
+                result.is_dead = true;
+            }
+        }
+        result.life_remaining = new_block.current_life;
+
+        // Collect expired effects
+        for effect in &new_block.effects {
+            if !effect.is_active() {
+                result.expired_effects.push(effect.id.clone());
+                if effect.is_stat_modifier() {
+                    result.stat_effects_expired = true;
+                }
+            }
+        }
+
+        // Remove expired effects
+        new_block.effects.retain(|e| e.is_active());
+
+        // Rebuild stats if stat modifiers expired
+        if result.stat_effects_expired {
+            new_block.rebuild_from_effects();
+        }
+
+        (new_block, result)
+    }
+
+    /// Rebuild stats considering effects
+    fn rebuild_from_effects(&mut self) {
+        // For now, just call the standard rebuild
+        // Stat modifier effects would be applied during stat accumulation
+        self.rebuild();
+    }
+
+    /// Get all active effects
+    pub fn active_effects(&self) -> &[Effect] {
+        &self.effects
+    }
+
+    /// Get effects of a specific status type
+    pub fn effects_of_status(&self, status: StatusEffect) -> Vec<&Effect> {
+        self.effects.iter().filter(|e| e.status() == Some(status)).collect()
+    }
+
+    /// Get total DPS from all damaging effects
+    pub fn total_effect_dps(&self) -> f64 {
+        self.effects.iter().map(|e| e.dps()).sum()
+    }
+
+    /// Clear all effects
+    pub fn clear_effects(&mut self) {
+        self.effects.clear();
     }
 }

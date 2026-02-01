@@ -367,8 +367,8 @@ fn draw_damage_preview(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Active effects on enemy (DoTs and Status Effects)
-    let has_active_effects = !enemy.active_dots.is_empty() || !enemy.active_status_effects.is_empty();
+    // Active effects on enemy (unified effects + legacy DoTs and Status Effects)
+    let has_active_effects = !enemy.effects.is_empty() || !enemy.active_dots.is_empty() || !enemy.active_status_effects.is_empty();
 
     if has_active_effects {
         lines.push(Line::from(""));
@@ -377,7 +377,40 @@ fn draw_damage_preview(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Red),
         )));
 
-        // Show active DoTs
+        // Show unified effects
+        for effect in &enemy.effects {
+            let icon = if let Some(status) = effect.status() {
+                match status {
+                    StatusEffect::Poison => "☠️",
+                    StatusEffect::Bleed => "🩸",
+                    StatusEffect::Burn => "🔥",
+                    StatusEffect::Freeze => "❄️",
+                    StatusEffect::Chill => "🥶",
+                    StatusEffect::Static => "⚡",
+                    StatusEffect::Fear => "😱",
+                    StatusEffect::Slow => "🐌",
+                }
+            } else if effect.is_stat_modifier() {
+                "✨"
+            } else {
+                "💀"
+            };
+
+            let info = if effect.is_damaging() {
+                format!(
+                    "{} ×{} ({:.0} DPS, {:.1}s)",
+                    effect.name, effect.stacks, effect.dps(), effect.duration_remaining
+                )
+            } else {
+                format!("{} ×{} ({:.1}s)", effect.name, effect.stacks, effect.duration_remaining)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", icon), Style::default().fg(Color::Magenta)),
+                Span::styled(info, Style::default().fg(Color::White)),
+            ]));
+        }
+
+        // Show legacy active DoTs (for backward compatibility)
         for dot in &enemy.active_dots {
             let icon = match dot.dot_type.as_str() {
                 "ignite" => "🔥",
@@ -394,7 +427,7 @@ fn draw_damage_preview(f: &mut Frame, app: &App, area: Rect) {
             ]));
         }
 
-        // Show active status effects
+        // Show legacy active status effects (for backward compatibility)
         for status in &enemy.active_status_effects {
             let icon = match status.effect_type {
                 StatusEffect::Poison => "☠️",
